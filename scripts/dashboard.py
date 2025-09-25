@@ -230,6 +230,28 @@ def main():
         except Exception as e:
             st.error(f"Menu Table error: {e}")
 
+    # Latest response summary as a new dashboard component
+    st.markdown("---")
+    st.subheader("Latest Form Response Summary")
+    try:
+        from super_octo_system.latest_response_summary import (
+            get_latest_response_summary,
+        )
+
+        sheet_id = "1AFQrHf15-Pzyvbmn9jzPU1FvXnW4u9VllsIWAQ0Mq6U"
+        sheet_name = "Form Responses 1"
+        df_summary = get_latest_response_summary(sheet_id, sheet_name)
+        # Use the Start week date in the Monday column as the heading, then drop that row
+        if "Monday" in df_summary.columns and not df_summary.empty:
+            start_week_date = df_summary.iloc[-1]["Monday"]
+            st.markdown(f"### Start Week Date: {start_week_date}")
+            df_summary_view = df_summary.iloc[:-1].reset_index(drop=True)
+        else:
+            df_summary_view = df_summary
+        st.dataframe(df_summary_view)
+    except Exception as e:
+        st.error(f"Latest Response Summary error: {e}")
+
 
 if __name__ == "__main__":
     main()
