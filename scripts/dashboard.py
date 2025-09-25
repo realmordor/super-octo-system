@@ -1,3 +1,4 @@
+import datetime
 import os
 import streamlit as st
 import pandas as pd
@@ -22,8 +23,10 @@ def main():
         format_func=lambda x: crs_codes[x],
         index=1,
     )
-
-    if st.button("Get Departure Board"):
+    generated = datetime.datetime.min
+    if st.button("Get Departure Board") or (
+        datetime.datetime.now() - generated > datetime.timedelta(seconds=5)
+    ):
         location_name, generated, services = get_departure_board(
             crs_code, token, 10, None
         )
