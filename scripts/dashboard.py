@@ -48,12 +48,13 @@ def get_calendar_events():
 
 def main():
     st.title("Super Octo System Dashboard")
-    col1, col2 = st.columns(2)
-    # Calendar in col1
-    with col1:
+    # Top row: Calendar (left), Weather (right)
+    top_left, top_right = st.columns(2)
+    with top_left:
         st.subheader("Google Calendar Events")
         st.write("Your events in a calendar view:")
         try:
+            st.set_page_config(layout="wide")
             from super_octo_system.google_calendar import get_upcoming_events
             from streamlit_calendar import calendar
 
@@ -85,23 +86,20 @@ def main():
         except Exception as e:
             st.error(f"Google Calendar API error: {e}")
 
-    # Weather in col2
-    with col2:
-        from super_octo_system.met_office import get_met_office_forecast
-
-        hw_lat = 51.6512
-        hw_lon = -0.1442
+    with top_right:
+        st.subheader("Met Office Forecast for Hadley Wood")
         try:
+            from super_octo_system.met_office import get_met_office_forecast
+            import pytz
+            from dateutil import parser
+
+            hw_lat = 51.6512
+            hw_lon = -0.1442
             forecast = get_met_office_forecast(hw_lat, hw_lon)
-            st.subheader(
-                "Met Office Forecast for Hadley Wood - Feels Like & Precipitation Table"
-            )
+            st.write("Feels Like & Precipitation Table:")
             time_series = []
             if "features" in forecast and forecast["features"]:
                 props = forecast["features"][0]["properties"]
-                import pytz
-                from dateutil import parser
-
                 london_tz = pytz.timezone("Europe/London")
                 today = datetime.datetime.now(london_tz).date()
                 for entry in props.get("timeSeries", []):
@@ -146,56 +144,61 @@ def main():
         except Exception as e:
             st.error(f"Met Office API error: {e}")
 
-    # Train board below
-    st.title("National Rail Departure Board Dashboard")
-    token = os.environ.get("DARWIN_LITE_TOKEN")
-    if not token:
-        st.error("DARWIN_LITE_TOKEN not set in environment.")
-        return
-
-    crs_code = st.selectbox(
-        "Select Departure Station",
-        options=list(crs_codes.keys()),
-        format_func=lambda x: crs_codes[x],
-    )
-    dest_crs_code = st.selectbox(
-        "Select Destination Station",
-        options=list(crs_codes.keys()),
-        format_func=lambda x: crs_codes[x],
-        index=1,
-    )
-    generated = datetime.datetime.min
-    if st.button("Get Departure Board") or (
-        datetime.datetime.now() - generated > datetime.timedelta(seconds=5)
-    ):
-        location_name, generated, services = get_departure_board(
-            crs_code, token, 10, None
-        )
-        if not services:
-            st.warning("No train services found or error occurred.")
+    # Bottom row: Train board (full width)
+    st.markdown("---")
+    train_container = st.container()
+    with train_container:
+        st.subheader("National Rail Departure Board Dashboard")
+        token = os.environ.get("DARWIN_LITE_TOKEN")
+        if not token:
+            st.error("DARWIN_LITE_TOKEN not set in environment.")
             return
-        data = []
-        for t in services:
-            # Filter by destination CRS code if selected
-            dest_code = getattr(t.destination.location[0], "crs", "")
-            if dest_crs_code and dest_code != dest_crs_code:
-                continue
-            data.append(
-                {
-                    "Time": getattr(t, "std", ""),
-                    "Destination": getattr(
-                        t.destination.location[0], "locationName", ""
-                    ),
-                    "Platform": getattr(t, "platform", ""),
-                    "ETD": getattr(t, "etd", ""),
-                }
+        col_train1, col_train2 = st.columns(2)
+        with col_train1:
+            crs_code = st.selectbox(
+                "Select Departure Station",
+                options=list(crs_codes.keys()),
+                format_func=lambda x: crs_codes[x],
             )
-        if not data:
-            st.warning("No train services match the destination CRS code filter.")
-            return
-        df = pd.DataFrame(data)
-        st.subheader(f"Trains from {location_name} (as of {generated})")
-        st.dataframe(df)
+        with col_train2:
+            dest_crs_code = st.selectbox(
+                "Select Destination Station",
+                options=list(crs_codes.keys()),
+                format_func=lambda x: crs_codes[x],
+                index=1,
+            )
+        generated = datetime.datetime.min
+        if st.button("Get Departure Board") or (
+            datetime.datetime.now() - generated > datetime.timedelta(seconds=5)
+        ):
+            location_name, generated, services = get_departure_board(
+                crs_code, token, 10, None
+            )
+            if not services:
+                st.warning("No train services found or error occurred.")
+                return
+            data = []
+            for t in services:
+                # Filter by destination CRS code if selected
+                dest_code = getattr(t.destination.location[0], "crs", "")
+                if dest_crs_code and dest_code != dest_crs_code:
+                    continue
+                data.append(
+                    {
+                        "Time": getattr(t, "std", ""),
+                        "Destination": getattr(
+                            t.destination.location[0], "locationName", ""
+                        ),
+                        "Platform": getattr(t, "platform", ""),
+                        "ETD": getattr(t, "etd", ""),
+                    }
+                )
+            if not data:
+                st.warning("No train services match the destination CRS code filter.")
+                return
+            df = pd.DataFrame(data)
+            st.subheader(f"Trains from {location_name} (as of {generated})")
+            st.dataframe(df)
 
 
 if __name__ == "__main__":
