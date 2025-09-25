@@ -1,0 +1,13 @@
+- train times
+    - next 3 trains
+- commute plan for different destinations - arrival time, departure time and duration (in future - number of changes)
+    - moorgate (minimum requirement)
+    - plumtree court
+    - kings cross
+- weather
+    - chance of rain (next hour and timeline)
+    - temperature (next hour and timeline)
+- people's location
+- calendar today (maybe next 3 days)
+- people's schedule for food/jobs
+- food menu
