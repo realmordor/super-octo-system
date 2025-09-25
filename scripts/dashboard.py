@@ -22,12 +22,11 @@ def main():
         format_func=lambda x: crs_codes[x],
         index=1,
     )
-    num_rows = st.slider("Number of rows", min_value=1, max_value=20, value=10)
-    filter_crs = st.text_input("Filter by CRS code (optional)")
+    num_rows = 10
 
     if st.button("Get Departure Board"):
         location_name, generated, services = get_departure_board(
-            crs_code, token, num_rows, filter_crs or None
+            crs_code, token, num_rows, None
         )
         if not services:
             st.warning("No train services found or error occurred.")

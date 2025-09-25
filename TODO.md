@@ -1,4 +1,4 @@
-- train times
+- train times - that update automatically
     - next 3 trains
 - commute plan for different destinations - arrival time, departure time and duration (in future - number of changes)
     - moorgate (minimum requirement)
