@@ -157,10 +157,12 @@ def main():
         except Exception as e:
             st.error(f"Met Office API error: {e}")
 
-    # Bottom row: Train board (full width)
+    # Bottom row: Train board (full width) and public Google Sheet table
     st.markdown("---")
-    train_container = st.container()
-    with train_container:
+    bottom_left, bottom_right = st.columns(2)
+
+    # Train board in bottom_left
+    with bottom_left:
         st.subheader("National Rail Departure Board Dashboard")
         token = os.environ.get("DARWIN_LITE_TOKEN")
         if not token:
@@ -212,6 +214,21 @@ def main():
             df = pd.DataFrame(data)
             st.subheader(f"Trains from {location_name} (as of {generated})")
             st.dataframe(df)
+
+    # Public Google Sheet table in bottom_right
+    with bottom_right:
+        st.subheader("This Week's Menu Table")
+        try:
+            from super_octo_system.public_google_sheet import (
+                get_public_google_sheet_as_dataframe,
+            )
+
+            sheet_id = "1qMt1jKFf3OVILmA-MsQ8Ga-8vsYLsCX0ky00zairf9M"
+            sheet_name = "thisWeekMenuMaker"
+            df_menu = get_public_google_sheet_as_dataframe(sheet_id, sheet_name)
+            st.dataframe(df_menu)
+        except Exception as e:
+            st.error(f"Menu Table error: {e}")
 
 
 if __name__ == "__main__":
