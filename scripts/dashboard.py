@@ -51,7 +51,7 @@ def main():
             st.warning("No train services match the destination CRS code filter.")
             return
         # Limit the number of rows after filtering
-        df = pd.DataFrame(data).head(num_rows)
+        df = pd.DataFrame(data)
         st.subheader(f"Trains from {location_name} (as of {generated})")
         st.dataframe(df)
 
