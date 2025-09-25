@@ -63,11 +63,19 @@ def main():
                 st.write("No upcoming events found.")
             else:
                 calendar_events = []
+                from dateutil import parser
+
                 for event in events:
-                    start = event["start"]
+                    start_raw = event["start"]
                     title = event["summary"]
+                    # Parse and format start time in 24-hour format
+                    try:
+                        start_dt = parser.isoparse(start_raw)
+                        start_fmt = start_dt.strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        start_fmt = start_raw
                     calendar_events.append(
-                        {"title": title, "start": start, "end": start}
+                        {"title": title, "start": start_fmt, "end": start_fmt}
                     )
                 calendar(
                     events=calendar_events,
@@ -80,6 +88,11 @@ def main():
                             "right": "dayGridMonth,timeGridWeek,timeGridDay",
                         },
                         "initialView": "dayGridMonth",
+                        "eventTimeFormat": {
+                            "hour": "2-digit",
+                            "minute": "2-digit",
+                            "hour12": False,
+                        },
                     },
                     custom_css=".fc-event-title { font-size: 1em; }",
                 )
