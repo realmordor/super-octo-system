@@ -60,7 +60,7 @@ def main():
                     for k, v in entry.items():
                         columns[k] = v
                 df_weather = pd.DataFrame(columns)
-                st.dataframe(df_weather, use_container_width=True)
+                st.dataframe(df_weather, width="stretch")
             else:
                 st.write("No timeSeries data available.")
         else:
