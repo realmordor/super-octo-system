@@ -22,11 +22,10 @@ def main():
         format_func=lambda x: crs_codes[x],
         index=1,
     )
-    num_rows = 10
 
     if st.button("Get Departure Board"):
         location_name, generated, services = get_departure_board(
-            crs_code, token, num_rows, None
+            crs_code, token, 10, None
         )
         if not services:
             st.warning("No train services found or error occurred.")
@@ -50,7 +49,6 @@ def main():
         if not data:
             st.warning("No train services match the destination CRS code filter.")
             return
-        # Limit the number of rows after filtering
         df = pd.DataFrame(data)
         st.subheader(f"Trains from {location_name} (as of {generated})")
         st.dataframe(df)
