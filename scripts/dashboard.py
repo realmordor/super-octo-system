@@ -1,5 +1,8 @@
 import os
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+
+# import streamlit.components.v1 as components
 import pandas as pd
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -10,6 +13,8 @@ from super_octo_system.train import get_departure_board, crs_codes
 
 # If modifying these SCOPES, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+st_autorefresh(interval=60 * 1000, key="data_refresh")
 
 
 def get_calendar_events():
