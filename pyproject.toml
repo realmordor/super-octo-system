@@ -27,3 +27,8 @@ build-backend = "hatchling.build"
 dev = [
     "pytest>=8.4.2",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that call real external APIs (deselect with '-m not integration')",
+]
