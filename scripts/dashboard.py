@@ -51,6 +51,35 @@ def get_calendar_events():
     return events
 
 
+def get_ingredients_list():
+    """Get list of ingredients from the second column of the ingredients sheet."""
+    try:
+        from super_octo_system.information_recipe import (
+            get_public_google_sheet_as_dataframe_by_gid,
+        )
+
+        sheet_id = "1qMt1jKFf3OVILmA-MsQ8Ga-8vsYLsCX0ky00zairf9M"
+        gid = "960508758"  # GID for the ingredients dropdown sheet
+
+        df = get_public_google_sheet_as_dataframe_by_gid(sheet_id, gid)
+
+        # Get the second column (index 1)
+        second_column = df.iloc[:, 1]
+
+        # Extract non-empty, non-null values
+        ingredients = []
+        for value in second_column:
+            if pd.notna(value) and str(value).strip() != "":
+                ingredients.append(str(value).strip())
+
+        # Remove duplicates and sort
+        ingredients = sorted(list(set(ingredients)))
+        return ingredients
+    except Exception as e:
+        st.error(f"Error loading ingredients: {e}")
+        return []
+
+
 def main():
     st.title("Super Octo System Dashboard")
     # Top row: Calendar (left), Weather (right)
@@ -256,6 +285,47 @@ def main():
         st.dataframe(df_summary_view)
     except Exception as e:
         st.error(f"Latest Response Summary error: {e}")
+
+    # Add ingredient search component
+    st.markdown("---")
+    st.subheader("Recipe Finder by Ingredient")
+
+    # Get ingredients list for dropdown
+    ingredients_list = get_ingredients_list()
+
+    if ingredients_list:
+        # Create dropdown for ingredient selection
+        selected_ingredient = st.selectbox(
+            "Select an ingredient to find recipes:",
+            options=["Select an ingredient..."] + ingredients_list,
+            index=0,
+        )
+
+        # Only search if an ingredient is selected
+        if selected_ingredient != "Select an ingredient...":
+            try:
+                from super_octo_system.information_recipe import (
+                    get_recipes_by_ingredient,
+                )
+
+                # Get recipes that use the selected ingredient (now returns dict with amounts)
+                matching_recipes = get_recipes_by_ingredient(selected_ingredient)
+
+                if matching_recipes:
+                    st.success(
+                        f"Found {len(matching_recipes)} recipe(s) using '{selected_ingredient}':"
+                    )
+
+                    # Display recipes with amounts as a formatted list
+                    for recipe, amount in matching_recipes.items():
+                        st.write(f"• **{recipe}**: {amount}")
+                else:
+                    st.info(f"No recipes found using '{selected_ingredient}'")
+
+            except Exception as e:
+                st.error(f"Error searching recipes: {e}")
+    else:
+        st.warning("Could not load ingredients list")
 
 
 if __name__ == "__main__":
