@@ -27,8 +27,8 @@ HADLEY_WOOD = (51.6512, -0.1442)
 RECIPE_SHEET_ID = "1qMt1jKFf3OVILmA-MsQ8Ga-8vsYLsCX0ky00zairf9M"
 SCHEDULE_SHEET_ID = "1AFQrHf15-Pzyvbmn9jzPU1FvXnW4u9VllsIWAQ0Mq6U"
 RECIPE_INGREDIENTS_GID = "802866866"
-INGREDIENTS_DROPDOWN_GID = "960508758"
 RAIL_WSDL = "http://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx?ver=2021-11-01"
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 CRS_CODES = {
     "HDW": "Hadley Wood",
@@ -58,9 +58,7 @@ def _sheet_url(
     sheet_id: str, *, name: str | None = None, gid: str | None = None
 ) -> str:
     base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    if name:
-        return f"{base}&sheet={urllib.parse.quote(name)}"
-    return f"{base}&gid={gid}"
+    return f"{base}&sheet={urllib.parse.quote(name)}" if name else f"{base}&gid={gid}"
 
 
 def _google_creds() -> Credentials:
@@ -153,9 +151,22 @@ def get_departures(
     return res.locationName, res.generatedAt, res.trainServices.service
 
 
+@st.cache_data(ttl=300)
+def _load_menu_sheet() -> pd.DataFrame:
+    return pd.read_csv(_sheet_url(RECIPE_SHEET_ID, name="thisWeekMenuMaker"))
+
+
 def get_weekly_menu() -> pd.DataFrame:
-    df = pd.read_csv(_sheet_url(RECIPE_SHEET_ID, name="thisWeekMenuMaker"))
+    df = _load_menu_sheet()
     return df.iloc[3:].dropna(axis=1, thresh=1).reset_index(drop=True)
+
+
+def get_menu_recipe_names() -> set[str]:
+    df = _load_menu_sheet()
+    final = df[df.iloc[:, 0] == "final"]
+    if final.empty:
+        return set()
+    return {str(v).strip() for v in final.iloc[0, 1:] if pd.notna(v) and str(v).strip()}
 
 
 def get_schedule_summary() -> pd.DataFrame:
@@ -163,18 +174,9 @@ def get_schedule_summary() -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
     latest = df.iloc[-1]
-    days = [
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-        "Sunday",
-    ]
     collated: dict = {}
     for col in df.columns:
-        for day in days:
+        for day in DAYS:
             if day.lower() in col.lower():
                 entry = col.split(day)[0].strip().replace("_", " ")
                 collated.setdefault(entry, {"Entry": entry})[day] = latest[col]
@@ -188,14 +190,6 @@ def get_schedule_summary() -> pd.DataFrame:
     if "Entry" in summary.columns:
         summary["Entry"] = summary["Entry"].str.replace(r"[\[\]\(\)]", "", regex=True)
     return summary.iloc[:-1].reset_index(drop=True) if len(summary) > 1 else summary
-
-
-def get_menu_recipe_names() -> set[str]:
-    df = pd.read_csv(_sheet_url(RECIPE_SHEET_ID, name="thisWeekMenuMaker"))
-    final = df[df.iloc[:, 0] == "final"]
-    if final.empty:
-        return set()
-    return {str(v).strip() for v in final.iloc[0, 1:] if pd.notna(v) and str(v).strip()}
 
 
 def get_ingredients() -> list[str]:
@@ -229,22 +223,8 @@ def get_recipes_for_ingredient(ingredient: str) -> dict[str, str]:
         if not current or current in matches:
             continue
         if any(needle in str(v).lower() for v in row if pd.notna(v)):
-            amount = next(
-                (
-                    str(row[c]).strip()
-                    for c in df.columns
-                    if "amount" in str(c).lower() and pd.notna(row[c])
-                ),
-                "",
-            )
-            unit = next(
-                (
-                    str(row[c]).strip()
-                    for c in df.columns
-                    if "unit" in str(c).lower() and pd.notna(row[c])
-                ),
-                "",
-            )
+            amount = str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else ""
+            unit = str(row.iloc[4]).strip() if pd.notna(row.iloc[4]) else ""
             matches[current] = f"{amount} {unit}".strip() or "Amount not specified"
     return matches
 
@@ -297,8 +277,7 @@ def render_weather():
             st.write(forecast)
             return
         london_tz = pytz.timezone("Europe/London")
-        now = datetime.datetime.now(london_tz)
-        today = now.date()
+        today = datetime.datetime.now(london_tz).date()
         tomorrow = today + datetime.timedelta(days=1)
         rows: dict = {}
         for entry in forecast["features"][0]["properties"].get("timeSeries", []):
@@ -363,8 +342,7 @@ def render_trains():
     cache_key = f"trains_{depart}_{dest}"
     if cache_key not in st.session_state or st.button("Refresh"):
         try:
-            location, generated, services = get_departures(depart, token)
-            st.session_state[cache_key] = (location, generated, services)
+            st.session_state[cache_key] = get_departures(depart, token)
         except Exception as e:
             st.error(f"Rail API error: {e}")
             return
