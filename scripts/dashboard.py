@@ -111,6 +111,7 @@ def get_upcoming_events(max_results: int = 30) -> list[dict]:
     ]
 
 
+@st.cache_data(ttl=1800)
 def get_weather(lat: float, lon: float) -> dict:
     api_key = os.getenv("MET_OFFICE_API_KEY", "")
     if not api_key:
