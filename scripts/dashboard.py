@@ -441,6 +441,7 @@ def main():
     st.set_page_config(layout="wide", page_title="Super Octo System")
     st_autorefresh(interval=60_000, key="data_refresh")
     st.title("Super Octo System Dashboard")
+    st.caption(f"Last updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     col_left, col_right = st.columns(2)
     with col_left:
