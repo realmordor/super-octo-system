@@ -8,7 +8,7 @@ import pytest
 # Mock streamlit before importing dashboard so cache_data decorators don't
 # require a running Streamlit server.
 _st = MagicMock()
-_st.cache_data = lambda **_: (lambda f: f)
+_st.cache_data = lambda **_: lambda f: f
 sys.modules.setdefault("streamlit", _st)
 sys.modules.setdefault("streamlit_autorefresh", MagicMock())
 sys.modules.setdefault("streamlit_calendar", MagicMock())

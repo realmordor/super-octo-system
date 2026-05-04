@@ -1,6 +1,8 @@
 # User defined
 credentials.json
 token.json
+nohup.out
+.dashboard.pid
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

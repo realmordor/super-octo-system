@@ -12,7 +12,7 @@ import sys
 import pytest
 
 _st = MagicMock()
-_st.cache_data = lambda **_: (lambda f: f)
+_st.cache_data = lambda **_: lambda f: f
 sys.modules.setdefault("streamlit", _st)
 sys.modules.setdefault("streamlit_autorefresh", MagicMock())
 sys.modules.setdefault("streamlit_calendar", MagicMock())
