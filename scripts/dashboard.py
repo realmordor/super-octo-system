@@ -103,6 +103,7 @@ def get_upcoming_events(max_results: int = 30) -> list[dict]:
     return [
         {
             "start": e["start"].get("dateTime", e["start"].get("date")),
+            "end": e["end"].get("dateTime", e["end"].get("date")),
             "summary": e.get("summary", "No Title"),
         }
         for e in items
@@ -241,11 +242,9 @@ def render_calendar():
             return
         cal_events = []
         for e in events:
-            try:
-                start = dt_parser.isoparse(e["start"]).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                start = e["start"]
-            cal_events.append({"title": e["summary"], "start": start, "end": start})
+            start = e["start"]
+            end = e.get("end", start)
+            cal_events.append({"title": e["summary"], "start": start, "end": end})
         st_calendar(
             events=cal_events,
             options={
@@ -257,6 +256,7 @@ def render_calendar():
                     "right": "dayGridMonth,timeGridWeek,timeGridDay",
                 },
                 "initialView": "listWeek",
+                "timeZone": "Europe/London",
                 "eventTimeFormat": {
                     "hour": "2-digit",
                     "minute": "2-digit",
