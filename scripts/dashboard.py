@@ -129,6 +129,7 @@ def get_weather(lat: float, lon: float) -> dict:
     return resp.json()
 
 
+@st.cache_data(ttl=60)
 def get_departures(
     crs: str, token: str, num_rows: int = 10
 ) -> tuple[str, datetime.datetime, list]:
@@ -257,6 +258,7 @@ def render_calendar():
                 },
                 "initialView": "listWeek",
                 "timeZone": "Europe/London",
+                "height": "auto",
                 "eventTimeFormat": {
                     "hour": "2-digit",
                     "minute": "2-digit",
@@ -264,6 +266,7 @@ def render_calendar():
                 },
             },
             custom_css=".fc-event-title { font-size: 1em; }",
+            key="calendar",
         )
     except Exception as e:
         st.error(f"Calendar error: {e}")
@@ -287,19 +290,19 @@ def render_weather():
             temp = entry.get("feelsLikeTemperature")
             precip = entry.get("probOfPrecipitation")
             t = round(temp) if temp is not None else None
-            t_emoji = (
-                "🥶"
+            t_icon = (
+                "❄"
                 if (t is not None and t <= 5)
-                else "🥵"
+                else "♨"
                 if (t is not None and t >= 25)
-                else "😊"
+                else "◑"
             )
-            r_emoji = (
-                "🌧️"
+            r_icon = (
+                "☂"
                 if (precip is not None and precip >= 70)
-                else "🌦️"
+                else "☁"
                 if (precip is not None and precip >= 30)
-                else "☀️"
+                else "☀"
             )
             label = (
                 local.strftime("%H:%M")
@@ -307,17 +310,13 @@ def render_weather():
                 else local.strftime("T+1 %H:%M")
             )
             rows[label] = {
-                "🌡️ Feels Like (°C)": f"{t} {t_emoji}",
-                "🌧️ Precip (%)": f"{precip} {r_emoji}",
+                "Feels Like (°C)": f"{t_icon} {t}",
+                "Precip (%)": f"{r_icon} {precip}",
             }
         if rows:
             st.dataframe(
-                pd.DataFrame(rows).T,
+                pd.DataFrame(rows),
                 width="stretch",
-                column_config={
-                    "🌡️ Feels Like (°C)": st.column_config.TextColumn(width="medium"),
-                    "🌧️ Precip (%)": st.column_config.TextColumn(width="medium"),
-                },
             )
         else:
             st.write("No forecast data available.")
@@ -339,15 +338,13 @@ def render_trains():
             "Destination", list(CRS_CODES), format_func=CRS_CODES.get, index=1
         )
 
-    cache_key = f"trains_{depart}_{dest}"
-    if cache_key not in st.session_state or st.button("Refresh"):
-        try:
-            st.session_state[cache_key] = get_departures(depart, token)
-        except Exception as e:
-            st.error(f"Rail API error: {e}")
-            return
-
-    location, generated, services = st.session_state[cache_key]
+    if st.button("Refresh"):
+        get_departures.clear()
+    try:
+        location, generated, services = get_departures(depart, token)
+    except Exception as e:
+        st.error(f"Rail API error: {e}")
+        return
     if not services:
         st.warning("No services found.")
         return
@@ -364,7 +361,9 @@ def render_trains():
     if not data:
         st.warning("No trains to the selected destination.")
     else:
-        st.caption(f"From {location} as of {generated}")
+        london_tz = pytz.timezone("Europe/London")
+        generated_local = generated.astimezone(london_tz).strftime("%Y-%m-%d %H:%M:%S")
+        st.caption(f"From {location} as of {generated_local}")
         st.dataframe(pd.DataFrame(data))
 
 
@@ -419,27 +418,49 @@ def render_recipe_finder():
 def main():
     st.set_page_config(layout="wide", page_title="Super Octo System")
     st_autorefresh(interval=60_000, key="data_refresh")
-    st.title("Super Octo System Dashboard")
+    st.components.v1.html(
+        """
+        <style>
+          #clock {
+            font-size: 2.2rem;
+            font-weight: 700;
+            font-family: sans-serif;
+            color: #fafafa;
+            margin: 0;
+            line-height: 1;
+          }
+        </style>
+        <p id="clock"></p>
+        <script>
+          function tick() {
+            const now = new Date();
+            document.getElementById("clock").textContent = now.toLocaleString(
+              "en-GB",
+              { timeZone: "Europe/London",
+                weekday: "long", year: "numeric", month: "long", day: "numeric",
+                hour: "2-digit", minute: "2-digit", second: "2-digit",
+                hour12: false }
+            );
+          }
+          tick();
+          setInterval(tick, 1000);
+        </script>
+        """,
+        height=50,
+    )
     st.caption(f"Last updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    col_left, col_right = st.columns(2)
-    with col_left:
-        render_calendar()
-    with col_right:
-        render_weather()
-
+    render_calendar()
     st.markdown("---")
-    col_left, col_right = st.columns(2)
-    with col_left:
-        render_trains()
-    with col_right:
-        render_menu()
-
+    render_trains()
     st.markdown("---")
-    render_schedule()
-
+    render_weather()
+    st.markdown("---")
+    render_menu()
     st.markdown("---")
     render_recipe_finder()
+    st.markdown("---")
+    render_schedule()
 
 
 if __name__ == "__main__":
