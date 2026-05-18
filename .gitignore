@@ -2,7 +2,9 @@
 credentials.json
 token.json
 nohup.out
+nohup_dash.out
 .dashboard.pid
+.dash_dashboard.pid
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
