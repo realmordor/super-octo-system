@@ -343,25 +343,35 @@ app.layout = dbc.Container(
         dcc.Store(id="calendar-store"),
         html.Div(id="fc-dummy", style={"display": "none"}),
         # ── Header ────────────────────────────────────────────────────────────────
-        dbc.Row(
-            className="my-3 align-items-end",
-            children=[
-                dbc.Col(
-                    html.Div(
-                        id="clock",
-                        style={
-                            "fontSize": "2rem",
-                            "fontWeight": "700",
-                            "lineHeight": "1.1",
-                        },
-                    )
-                ),
-                dbc.Col(
-                    html.Small(
-                        id="last-updated", className="text-muted text-end d-block"
-                    )
-                ),
-            ],
+        html.Div(
+            style={
+                "position": "sticky",
+                "top": "0",
+                "zIndex": "1000",
+                "backgroundColor": "var(--bs-body-bg)",
+                "paddingTop": "0.75rem",
+                "paddingBottom": "0.75rem",
+            },
+            children=dbc.Row(
+                className="align-items-end",
+                children=[
+                    dbc.Col(
+                        html.Div(
+                            id="clock",
+                            style={
+                                "fontSize": "2rem",
+                                "fontWeight": "700",
+                                "lineHeight": "1.1",
+                            },
+                        )
+                    ),
+                    dbc.Col(
+                        html.Small(
+                            id="last-updated", className="text-muted text-end d-block"
+                        )
+                    ),
+                ],
+            ),
         ),
         # ── Calendar ──────────────────────────────────────────────────────────────
         dbc.Card(

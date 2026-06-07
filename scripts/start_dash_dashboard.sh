@@ -8,14 +8,8 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR" || exit
 
 # Kill any existing Dash dashboard process
-if [ -f .dash_dashboard.pid ]; then
-    OLD_PID=$(cat .dash_dashboard.pid)
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "Stopping existing Dash dashboard (PID $OLD_PID)..."
-        kill "$OLD_PID"
-    fi
-    rm .dash_dashboard.pid
-fi
+pkill -f dash_dashboard.py 2>/dev/null
+rm -f .dash_dashboard.pid
 
 # Start the Dash dashboard
 nohup uv run python scripts/dash_dashboard.py \
