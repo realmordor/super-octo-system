@@ -199,6 +199,10 @@ def _load_menu_sheet() -> pd.DataFrame:
     return df
 
 
+_MENU_ROW_ORDER = ["final", "recipeBook", "pageNumber", "sideSalad", "notes"]
+_MENU_ROWS_REMOVE = {"prepTime", "cookTime", "sourceShortName", "serves"}
+
+
 def get_weekly_menu() -> pd.DataFrame:
     df = _load_menu_sheet()
     menu = df.iloc[3:].dropna(axis=1, thresh=1).reset_index(drop=True)
@@ -209,6 +213,14 @@ def get_weekly_menu() -> pd.DataFrame:
             str(final[col]).strip() if col in final.index and pd.notna(final[col]) and str(final[col]).strip() else col
             for col in menu.columns
         ]
+    label_col = menu.columns[0]
+    menu = menu[~menu[label_col].isin(_MENU_ROWS_REMOVE)]
+    order = {label: i for i, label in enumerate(_MENU_ROW_ORDER)}
+    menu = menu.sort_values(
+        by=label_col,
+        key=lambda s: s.map(lambda x: order.get(x, len(_MENU_ROW_ORDER))),
+        kind="stable",
+    ).reset_index(drop=True)
     return menu
 
 
