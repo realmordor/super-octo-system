@@ -89,6 +89,16 @@ def _google_creds() -> Credentials:
     return creds
 
 
+_LONDON = pytz.timezone("Europe/London")
+
+
+def _to_london(dt_str: str) -> str:
+    if not dt_str or "T" not in dt_str:
+        return dt_str  # all-day date string, pass through unchanged
+    dt = datetime.datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    return dt.astimezone(_LONDON).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def get_upcoming_events(max_results: int = 30) -> list[dict]:
     with _lock:
         if "events" in _calendar_cache:
@@ -115,8 +125,8 @@ def get_upcoming_events(max_results: int = 30) -> list[dict]:
     )
     result = [
         {
-            "start": e["start"].get("dateTime", e["start"].get("date")),
-            "end": e["end"].get("dateTime", e["end"].get("date")),
+            "start": _to_london(e["start"].get("dateTime", e["start"].get("date"))),
+            "end": _to_london(e["end"].get("dateTime", e["end"].get("date"))),
             "summary": e.get("summary", "No Title"),
         }
         for e in items
@@ -191,7 +201,15 @@ def _load_menu_sheet() -> pd.DataFrame:
 
 def get_weekly_menu() -> pd.DataFrame:
     df = _load_menu_sheet()
-    return df.iloc[3:].dropna(axis=1, thresh=1).reset_index(drop=True)
+    menu = df.iloc[3:].dropna(axis=1, thresh=1).reset_index(drop=True)
+    final_rows = df[df.iloc[:, 0] == "final"]
+    if not final_rows.empty:
+        final = final_rows.iloc[0]
+        menu.columns = [
+            str(final[col]).strip() if col in final.index and pd.notna(final[col]) and str(final[col]).strip() else col
+            for col in menu.columns
+        ]
+    return menu
 
 
 def get_menu_recipe_names() -> set[str]:
@@ -592,7 +610,7 @@ clientside_callback(
 
         window._fc = new FullCalendar.Calendar(el, {
             initialView: "dayGridMonth",
-            timeZone: "Europe/London",
+            timeZone: "local",
             height: "auto",
             events: events,
             headerToolbar: {
