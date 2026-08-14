@@ -1,11 +1,15 @@
 import datetime
+import gzip
+import io
 import os
 import threading
 import urllib.parse
+from xml.etree import ElementTree as ET
 
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
+import paramiko
 import pytz
 import requests
 from cachetools import TTLCache
@@ -16,9 +20,6 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from zeep import Client, xsd
-from zeep.plugins import HistoryPlugin
-from zeep.settings import Settings
 
 load_dotenv()
 
@@ -29,7 +30,6 @@ HADLEY_WOOD = (51.6512, -0.1442)
 RECIPE_SHEET_ID = "1qMt1jKFf3OVILmA-MsQ8Ga-8vsYLsCX0ky00zairf9M"
 SCHEDULE_SHEET_ID = "1AFQrHf15-Pzyvbmn9jzPU1FvXnW4u9VllsIWAQ0Mq6U"
 RECIPE_INGREDIENTS_GID = "802866866"
-RAIL_WSDL = "http://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx?ver=2021-11-01"
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 CRS_CODES = {
@@ -53,12 +53,25 @@ CRS_CODES = {
     "WGC": "Welwyn Garden City",
 }
 
+TIPLOC_FROM_CRS = {
+    "HDW": "HADLYWD", "MOG": "MRGT",    "OLD": "OLDST",   "EXR": "ESSEXRD",
+    "HHY": "HGHI",    "DYP": "DRYP",    "FPK": "FNPK",    "HGY": "HRGY",
+    "HRN": "HRNSY",   "AAP": "ALEXNDP", "NSG": "NEWSGAT", "OKL": "OKLGHPK",
+    "NBA": "NBARNET",  "PBR": "POTRSBR", "BPK": "BRKMNPK", "WMG": "WELHAMG",
+    "HAT": "HATFILD",  "WGC": "WLWYNGC",
+}
+TIPLOC_TO_NAME = {t: CRS_CODES[c] for c, t in TIPLOC_FROM_CRS.items()}
+
+_DARWIN_PP_ROOT = "http://www.thalesgroup.com/rtti/PushPort/v16"
+_DARWIN_PP_NS5  = "http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"
+
 # ── Caching ────────────────────────────────────────────────────────────────────
 
 _lock = threading.Lock()
 _weather_cache: TTLCache = TTLCache(maxsize=4, ttl=1800)
 _menu_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
 _departures_cache: TTLCache = TTLCache(maxsize=20, ttl=60)
+_snapshot_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
 _calendar_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
@@ -161,29 +174,116 @@ def get_weather(lat: float, lon: float) -> dict:
     return result
 
 
-def get_departures(crs: str, token: str, num_rows: int = 10):
-    key = (crs, token)
+def _fetch_snapshot() -> str:
+    with _lock:
+        if "xml" in _snapshot_cache:
+            return _snapshot_cache["xml"]
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(
+        os.environ.get("DARWIN_SFTP_HOST", "darwin-dist-44ae45.nationalrail.co.uk"),
+        port=int(os.environ.get("DARWIN_SFTP_PORT", "2222")),
+        username=os.environ.get("DARWIN_SFTP_USER", "sftpuser"),
+        password=os.environ.get("DARWIN_SFTP_PASS", "P3RSeYeod!0"),
+    )
+    sftp = ssh.open_sftp()
+    buf = io.BytesIO()
+    sftp.getfo("snapshot/snapshot.gz", buf)
+    sftp.close()
+    ssh.close()
+    buf.seek(0)
+    xml = gzip.decompress(buf.read()).decode("utf-8")
+    with _lock:
+        _snapshot_cache["xml"] = xml
+    return xml
+
+
+def get_departures(depart_crs: str, dest_crs: str | None = None) -> tuple[str, list[dict]]:
+    key = (depart_crs, dest_crs)
     with _lock:
         if key in _departures_cache:
             return _departures_cache[key]
-    client = Client(
-        wsdl=RAIL_WSDL, settings=Settings(strict=False), plugins=[HistoryPlugin()]
-    )
-    header = xsd.Element(
-        "{http://thalesgroup.com/RTTI/2013-11-28/Token/types}AccessToken",
-        xsd.ComplexType(
-            [
-                xsd.Element(
-                    "{http://thalesgroup.com/RTTI/2013-11-28/Token/types}TokenValue",
-                    xsd.String(),
-                )
-            ]
-        ),
-    )
-    res = client.service.GetDepartureBoard(
-        numRows=num_rows, crs=crs, _soapheaders=[header(TokenValue=token)]
-    )
-    result = (res.locationName, res.generatedAt, res.trainServices.service)
+
+    depart_tiploc = TIPLOC_FROM_CRS.get(depart_crs, depart_crs)
+    dest_tiploc = TIPLOC_FROM_CRS.get(dest_crs) if dest_crs else None
+    xml = _fetch_snapshot()
+
+    schedules: dict[str, dict] = {}
+    forecasts: dict[str, dict] = {}
+
+    for line in xml.splitlines():
+        if depart_tiploc not in line:
+            continue
+        try:
+            root = ET.fromstring(line.split("?>", 1)[1] if "?>" in line else line)
+        except ET.ParseError:
+            continue
+        sr = root.find(f"{{{_DARWIN_PP_ROOT}}}sR")
+        if sr is None:
+            continue
+
+        sched = sr.find(f"{{{_DARWIN_PP_ROOT}}}schedule")
+        if sched is not None:
+            rid = sched.get("rid")
+            ssd = sched.get("ssd", "")
+            ptd_here = None
+            cancelled_here = False
+            dest_tpl = None
+            for child in sched:
+                tag = child.tag.split("}")[-1]
+                tpl = child.get("tpl", "")
+                if tpl == depart_tiploc and tag in ("IP", "OR"):
+                    ptd_here = child.get("ptd") or child.get("wtd")
+                    cancelled_here = child.get("can") == "true"
+                if tag in ("DT", "OPDT"):
+                    dest_tpl = tpl
+            if ptd_here:
+                schedules[rid] = {
+                    "ptd": ptd_here,
+                    "ssd": ssd,
+                    "dest_tpl": dest_tpl,
+                    "cancelled": cancelled_here,
+                }
+
+        ts = sr.find(f"{{{_DARWIN_PP_ROOT}}}TS")
+        if ts is not None:
+            rid = ts.get("rid")
+            for loc in ts.findall(f"{{{_DARWIN_PP_NS5}}}Location"):
+                if loc.get("tpl") == depart_tiploc:
+                    dep = loc.find(f"{{{_DARWIN_PP_NS5}}}dep")
+                    plat = loc.find(f"{{{_DARWIN_PP_NS5}}}plat")
+                    if dep is not None:
+                        forecasts[rid] = {
+                            "etd": dep.get("at") or dep.get("et") or "",
+                            "is_actual": dep.get("at") is not None,
+                            "platform": plat.text if plat is not None else "—",
+                        }
+
+    now = datetime.datetime.now(_LONDON)
+    departures = []
+    for rid, s in schedules.items():
+        if dest_tiploc and s["dest_tpl"] != dest_tiploc:
+            continue
+        try:
+            sched_dt = _LONDON.localize(
+                datetime.datetime.strptime(f"{s['ssd']} {s['ptd']}", "%Y-%m-%d %H:%M")
+            )
+        except ValueError:
+            continue
+        if sched_dt < now - datetime.timedelta(minutes=2):
+            continue
+        fc = forecasts.get(rid, {})
+        etd = fc.get("etd", s["ptd"])
+        departures.append({
+            "Time": s["ptd"],
+            "Destination": TIPLOC_TO_NAME.get(s["dest_tpl"], s["dest_tpl"] or "—"),
+            "Platform": fc.get("platform", "—"),
+            "ETD": "On time" if etd == s["ptd"] else ("Arrived" if fc.get("is_actual") else etd),
+            "Cancelled": "Yes" if s["cancelled"] else "",
+        })
+
+    departures.sort(key=lambda x: x["Time"])
+    result = (CRS_CODES.get(depart_crs, depart_crs), departures)
     with _lock:
         _departures_cache[key] = result
     return result
@@ -660,41 +760,21 @@ clientside_callback(
     Input("dest", "value"),
 )
 def update_trains(_, __, depart, dest):
-    token = os.environ.get("DARWIN_LITE_TOKEN")
-    if not token:
-        return _error("DARWIN_LITE_TOKEN not set.")
     if ctx.triggered_id == "btn-refresh-trains":
         with _lock:
-            _departures_cache.pop((depart, token), None)
+            _departures_cache.pop((depart, dest), None)
+            _snapshot_cache.clear()
     try:
-        location, generated, services = get_departures(depart, token)
+        location, departures = get_departures(depart, dest)
     except Exception as ex:
         return _error(f"Rail API error: {ex}")
-    if not services:
-        return _warn("No services found.")
-    data = [
-        {
-            "Time": t.std,
-            "Destination": t.destination.location[0].locationName,
-            "Platform": t.platform or "—",
-            "ETD": t.etd,
-        }
-        for t in services
-        if getattr(t.destination.location[0], "crs", "") == dest
-    ]
-    if not data:
+    if not departures:
         return _warn("No trains to the selected destination.")
-    london_tz = pytz.timezone("Europe/London")
-    generated_local = generated.astimezone(london_tz).strftime("%Y-%m-%d %H:%M:%S")
-    return html.Div(
-        [
-            html.Small(
-                f"From {location} as of {generated_local}",
-                className="text-muted d-block mb-2",
-            ),
-            _table(pd.DataFrame(data)),
-        ]
-    )
+    as_of = datetime.datetime.now(_LONDON).strftime("%H:%M:%S")
+    return html.Div([
+        html.Small(f"From {location} as of {as_of}", className="text-muted d-block mb-2"),
+        _table(pd.DataFrame(departures[:5])),
+    ])
 
 
 @app.callback(

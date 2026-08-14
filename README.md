@@ -20,9 +20,18 @@ cp .env-template .env
 ```
 Fill in `.env`:
 ```
-DARWIN_LITE_TOKEN=   # National Rail Darwin Lite API token
 MET_OFFICE_API_KEY=  # Met Office DataHub API key
+
+# Darwin Push Port SFTP credentials (see below)
+DARWIN_SFTP_HOST=darwin-dist-44ae45.nationalrail.co.uk
+DARWIN_SFTP_PORT=2222
+DARWIN_SFTP_USER=sftpuser
+DARWIN_SFTP_PASS=
 ```
+
+**Getting Darwin Push Port credentials**
+
+Register at https://opendata.nationalrail.co.uk/feeds — create an account and subscribe to the **Darwin** feed. Once approved you will receive SFTP credentials (host, port, username, password) and access to the `snapshot/snapshot.gz` file which contains the full real-time train state. Fill the SFTP details into `.env`.
 
 **3. Set up Google Calendar credentials**
 

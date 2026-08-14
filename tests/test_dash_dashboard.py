@@ -26,6 +26,7 @@ def clear_caches():
     d._weather_cache.clear()
     d._menu_cache.clear()
     d._departures_cache.clear()
+    d._snapshot_cache.clear()
     d._calendar_cache.clear()
     yield
 
@@ -68,21 +69,32 @@ def schedule_df():
     )
 
 
-@pytest.fixture
-def mock_services():
-    def make_service(std, etd, dest_name, dest_crs, platform=None):
-        svc = MagicMock()
-        svc.std = std
-        svc.etd = etd
-        svc.platform = platform
-        svc.destination.location = [MagicMock(locationName=dest_name, crs=dest_crs)]
-        return svc
-
-    return [
-        make_service("08:00", "On time", "Moorgate", "MOG", "1"),
-        make_service("08:15", "Delayed", "Moorgate", "MOG", "2"),
-        make_service("08:30", "On time", "Finsbury Park", "FPK", "1"),
-    ]
+def _make_snapshot(ssd: str, ptd: str, dest_tpl: str = "MRGT", cancelled: bool = False, etd: str | None = None) -> str:
+    can_attr = ' can="true"' if cancelled else ""
+    sched_line = (
+        f'<?xml version="1.0" encoding="UTF-8"?>'
+        f'<Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16"'
+        f' xmlns:ns2="http://www.thalesgroup.com/rtti/PushPort/Schedules/v3"'
+        f' ts="2026-08-14T12:00:00+01:00" version="16.0">'
+        f'<sR><schedule rid="RID001" uid="A00001" ssd="{ssd}" toc="GN">'
+        f'<ns2:OR wtd="12:01" ptd="12:01" tpl="{dest_tpl}" act="TB"/>'
+        f'<ns2:IP wta="{ptd}" wtd="{ptd}" tpl="HADLYWD" pta="{ptd}" ptd="{ptd}"{can_attr}/>'
+        f'<ns2:DT wta="13:00" tpl="WLWYNGC" pta="13:00"/>'
+        f'</schedule></sR></Pport>'
+    )
+    if etd is None:
+        return sched_line
+    ts_line = (
+        f'\n<?xml version="1.0" encoding="UTF-8"?>'
+        f'<Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16"'
+        f' xmlns:ns5="http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"'
+        f' ts="2026-08-14T12:00:00+01:00" version="16.0">'
+        f'<sR><TS rid="RID001" uid="A00001" ssd="{ssd}">'
+        f'<ns5:Location tpl="HADLYWD" wtd="{ptd}">'
+        f'<ns5:dep et="{etd}" src="Darwin"/><ns5:plat>2</ns5:plat>'
+        f'</ns5:Location></TS></sR></Pport>'
+    )
+    return sched_line + ts_line
 
 
 # ── _sheet_url ────────────────────────────────────────────────────────────────
@@ -153,7 +165,8 @@ def test_get_weekly_menu_skips_first_three_rows():
     )
     with patch.object(d, "_load_menu_sheet", return_value=df):
         result = d.get_weekly_menu()
-    assert list(result["A"]) == ["data1", "data2"]
+    # Column "A" is renamed to "final" (the value in the final row for that column)
+    assert list(result["final"]) == ["data1", "data2"]
 
 
 def test_get_weekly_menu_drops_all_empty_columns():
@@ -366,11 +379,137 @@ def test_update_calendar_preserves_start_and_end():
     assert result[0]["end"] == "2026-05-20T11:00:00Z"
 
 
+# ── _fetch_snapshot ───────────────────────────────────────────────────────────
+
+
+def test_fetch_snapshot_downloads_and_decompresses():
+    import gzip, io
+    payload = gzip.compress(b"<xml/>")
+    mock_ssh = MagicMock()
+    mock_sftp = MagicMock()
+    mock_ssh.open_sftp.return_value = mock_sftp
+
+    def fake_getfo(path, buf):
+        buf.write(payload)
+
+    mock_sftp.getfo.side_effect = fake_getfo
+    with patch("scripts.dash_dashboard.paramiko.SSHClient", return_value=mock_ssh):
+        result = d._fetch_snapshot()
+    assert result == "<xml/>"
+
+
+def test_fetch_snapshot_uses_cache():
+    import gzip
+    payload = gzip.compress(b"<cached/>")
+    mock_ssh = MagicMock()
+    mock_sftp = MagicMock()
+    mock_ssh.open_sftp.return_value = mock_sftp
+
+    def fake_getfo(path, buf):
+        buf.write(payload)
+
+    mock_sftp.getfo.side_effect = fake_getfo
+    with patch("scripts.dash_dashboard.paramiko.SSHClient", return_value=mock_ssh):
+        d._fetch_snapshot()
+        d._fetch_snapshot()
+    mock_sftp.getfo.assert_called_once()
+
+
+# ── get_departures ────────────────────────────────────────────────────────────
+
+
+def test_get_departures_finds_stopping_trains():
+    xml = _make_snapshot("2026-08-14", "23:59")
+    with patch.object(d, "_fetch_snapshot", return_value=xml):
+        with patch.object(d, "_LONDON", d._LONDON):
+            _, deps = d.get_departures("HDW", "WGC")
+    assert len(deps) == 1
+    assert deps[0]["Time"] == "23:59"
+    assert deps[0]["Destination"] == "Welwyn Garden City"
+
+
+def test_get_departures_filters_by_destination():
+    xml = _make_snapshot("2026-08-14", "23:59", dest_tpl="MRGT")
+    with patch.object(d, "_fetch_snapshot", return_value=xml):
+        _, deps = d.get_departures("HDW", "MOG")
+    assert len(deps) == 0  # dest is WLWYNGC in schedule, not MRGT
+
+
+def test_get_departures_applies_forecast_etd():
+    xml = _make_snapshot("2026-08-14", "23:59", etd="00:05")
+    with patch.object(d, "_fetch_snapshot", return_value=xml):
+        _, deps = d.get_departures("HDW", "WGC")
+    assert deps[0]["ETD"] == "00:05"
+    assert deps[0]["Platform"] == "2"
+
+
+def test_get_departures_on_time_when_etd_matches_ptd():
+    xml = _make_snapshot("2026-08-14", "23:59", etd="23:59")
+    with patch.object(d, "_fetch_snapshot", return_value=xml):
+        _, deps = d.get_departures("HDW", "WGC")
+    assert deps[0]["ETD"] == "On time"
+
+
+def test_get_departures_marks_cancelled():
+    xml = _make_snapshot("2026-08-14", "23:59", cancelled=True)
+    with patch.object(d, "_fetch_snapshot", return_value=xml):
+        _, deps = d.get_departures("HDW", "WGC")
+    assert deps[0]["Cancelled"] == "Yes"
+
+
+def test_get_departures_skips_past_trains():
+    xml = _make_snapshot("2000-01-01", "08:00")
+    with patch.object(d, "_fetch_snapshot", return_value=xml):
+        _, deps = d.get_departures("HDW", "WGC")
+    assert deps == []
+
+
+def test_get_departures_uses_cache():
+    xml = _make_snapshot("2026-08-14", "23:59")
+    with patch.object(d, "_fetch_snapshot", return_value=xml) as mock_fetch:
+        d.get_departures("HDW", "WGC")
+        d.get_departures("HDW", "WGC")
+    mock_fetch.assert_called_once()
+
+
 # ── update_trains callback ────────────────────────────────────────────────────
 
 
-def test_update_trains_returns_error_when_no_token(mock_services):
-    with patch.dict("os.environ", {}, clear=True):
+def _make_departure(time: str) -> dict:
+    return {"Time": time, "Destination": "Moorgate", "Platform": "1", "ETD": "On time", "Cancelled": ""}
+
+
+def test_update_trains_returns_table_with_departures():
+    departures = [_make_departure("15:30")]
+    with patch.object(d, "get_departures", return_value=("Hadley Wood", departures)):
+        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
+            mock_ctx.triggered_id = None
+            result = d.update_trains(1, 0, "HDW", "MOG")
+    assert isinstance(result, html.Div)
+
+
+def test_update_trains_shows_at_most_five_rows():
+    departures = [_make_departure(f"1{i}:00") for i in range(8)]
+    with patch.object(d, "get_departures", return_value=("Hadley Wood", departures)):
+        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
+            mock_ctx.triggered_id = None
+            result = d.update_trains(1, 0, "HDW", "MOG")
+    table = result.children[1]
+    rows = [c for c in table.children[1].children if hasattr(c, "children")]
+    assert len(rows) == 5
+
+
+def test_update_trains_returns_warning_when_empty():
+    with patch.object(d, "get_departures", return_value=("Hadley Wood", [])):
+        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
+            mock_ctx.triggered_id = None
+            result = d.update_trains(1, 0, "HDW", "MOG")
+    assert isinstance(result, dbc.Alert)
+    assert result.color == "warning"
+
+
+def test_update_trains_returns_error_on_api_failure():
+    with patch.object(d, "get_departures", side_effect=Exception("SFTP error")):
         with patch("scripts.dash_dashboard.ctx") as mock_ctx:
             mock_ctx.triggered_id = None
             result = d.update_trains(1, 0, "HDW", "MOG")
@@ -378,59 +517,16 @@ def test_update_trains_returns_error_when_no_token(mock_services):
     assert result.color == "danger"
 
 
-def test_update_trains_returns_table_with_matching_services(mock_services):
-    import datetime
-
-    generated = datetime.datetime(2026, 5, 16, 8, 0, tzinfo=datetime.timezone.utc)
-    with patch.dict("os.environ", {"DARWIN_LITE_TOKEN": "fake"}):
-        with patch.object(
-            d, "get_departures", return_value=("Hadley Wood", generated, mock_services)
-        ):
-            with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-                mock_ctx.triggered_id = None
-                result = d.update_trains(1, 0, "HDW", "MOG")
-    assert isinstance(result, html.Div)
-
-
-def test_update_trains_warns_when_no_matching_destination(mock_services):
-    import datetime
-
-    generated = datetime.datetime(2026, 5, 16, 8, 0, tzinfo=datetime.timezone.utc)
-    with patch.dict("os.environ", {"DARWIN_LITE_TOKEN": "fake"}):
-        with patch.object(
-            d, "get_departures", return_value=("Hadley Wood", generated, mock_services)
-        ):
-            with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-                mock_ctx.triggered_id = None
-                result = d.update_trains(1, 0, "HDW", "AAP")
-    assert isinstance(result, dbc.Alert)
-    assert result.color == "warning"
-
-
-def test_update_trains_returns_error_on_api_failure():
-    with patch.dict("os.environ", {"DARWIN_LITE_TOKEN": "fake"}):
-        with patch.object(d, "get_departures", side_effect=Exception("SOAP error")):
-            with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-                mock_ctx.triggered_id = None
-                result = d.update_trains(1, 0, "HDW", "MOG")
-    assert isinstance(result, dbc.Alert)
-    assert result.color == "danger"
-
-
-def test_update_trains_clears_cache_on_refresh(mock_services):
-    import datetime
-
-    generated = datetime.datetime(2026, 5, 16, 8, 0, tzinfo=datetime.timezone.utc)
-    token = "fake"
-    d._departures_cache[("HDW", token)] = ("Hadley Wood", generated, mock_services)
-    with patch.dict("os.environ", {"DARWIN_LITE_TOKEN": token}):
-        with patch.object(
-            d, "get_departures", return_value=("Hadley Wood", generated, mock_services)
-        ):
-            with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-                mock_ctx.triggered_id = "btn-refresh-trains"
-                d.update_trains(1, 1, "HDW", "MOG")
-    assert ("HDW", token) not in d._departures_cache
+def test_update_trains_clears_cache_on_refresh():
+    departures = [{"Time": "15:30", "Destination": "Moorgate", "Platform": "1", "ETD": "On time", "Cancelled": ""}]
+    d._departures_cache[("HDW", "MOG")] = ("Hadley Wood", departures)
+    d._snapshot_cache["xml"] = "stale"
+    with patch.object(d, "get_departures", return_value=("Hadley Wood", departures)):
+        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
+            mock_ctx.triggered_id = "btn-refresh-trains"
+            d.update_trains(1, 1, "HDW", "MOG")
+    assert ("HDW", "MOG") not in d._departures_cache
+    assert "xml" not in d._snapshot_cache
 
 
 # ── update_weather callback ───────────────────────────────────────────────────
