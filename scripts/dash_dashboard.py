@@ -595,6 +595,18 @@ def _table(df: pd.DataFrame, index: bool = False) -> dbc.Table:
     return dbc.Table.from_dataframe(df, index=index, index_label="", **TABLE_STYLE)
 
 
+def _link_urls(df: pd.DataFrame) -> pd.DataFrame:
+    """Show cells that are just a web address as a short link that opens in a new tab."""
+
+    def link(value):
+        if isinstance(value, str) and re.fullmatch(r"https?://\S+", value.strip()):
+            url = value.strip()
+            return html.A("Link ↗", href=url, target="_blank", rel="noopener noreferrer", title=url)
+        return value
+
+    return df.map(link)
+
+
 def _trains_table(departures: list[dict], now: datetime.datetime) -> dbc.Table:
     """The next train is orange if it leaves within 10 minutes; delays and cancellations are red."""
     rows = []
@@ -1086,7 +1098,7 @@ def update_weather(_):
 @app.callback(Output("menu-content", "children"), Input("int-slow", "n_intervals"))
 def update_menu(_):
     try:
-        return _table(get_weekly_menu())
+        return _table(_link_urls(get_weekly_menu()))
     except Exception as ex:
         return _error(f"Menu error: {ex}")
 

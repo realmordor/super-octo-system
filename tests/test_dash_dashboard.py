@@ -790,6 +790,35 @@ def test_update_menu_returns_table():
     assert isinstance(result, dbc.Table)
 
 
+DOC_URL = "https://docs.google.com/document/d/1KtrU1qtReloPLENuU902SwsRZ-DD7n-d8rrHy4d8Pis/edit?usp=sharing"
+
+
+def test_link_urls_turns_url_cells_into_short_new_tab_links():
+    df = pd.DataFrame({"label": ["pageNumber"], "Curry": [f" {DOC_URL} "], "Paneer": ["98"]})
+    link = d._link_urls(df).loc[0, "Curry"]
+    assert isinstance(link, html.A)
+    assert link.children == "Link ↗"
+    assert link.href == DOC_URL
+    assert link.target == "_blank"
+
+
+def test_link_urls_leaves_other_cells_alone():
+    df = pd.DataFrame({"label": ["pageNumber", "notes"], "Curry": ["122", "see https://example.com"], "Rice": [None, 40]})
+    result = d._link_urls(df)
+    assert result.loc[0, "Curry"] == "122"
+    assert result.loc[1, "Curry"] == "see https://example.com"
+    assert result.loc[1, "Rice"] == 40
+
+
+def test_update_menu_links_urls_in_table():
+    df = pd.DataFrame({"label": ["pageNumber"], "Curry": [DOC_URL]})
+    with patch.object(d, "get_weekly_menu", return_value=df):
+        result = d.update_menu(1)
+    cell = result.children[1].children[0].children[1]
+    assert isinstance(cell.children, html.A)
+    assert cell.children.href == DOC_URL
+
+
 def test_update_menu_returns_error_on_exception():
     with patch.object(d, "get_weekly_menu", side_effect=Exception("network error")):
         result = d.update_menu(1)
