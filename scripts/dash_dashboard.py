@@ -1,9 +1,15 @@
+import contextlib
 import datetime
 import gzip
 import io
+import logging
 import os
+import queue
+import re
 import threading
+import time
 import urllib.parse
+import zlib
 from xml.etree import ElementTree as ET
 
 import dash
@@ -12,8 +18,9 @@ import pandas as pd
 import paramiko
 import pytz
 import requests
+import stomp
 from cachetools import TTLCache
-from dash import MATCH, Input, Output, State, clientside_callback, ctx, dcc, html
+from dash import MATCH, Input, Output, State, clientside_callback, dcc, html
 from dateutil import parser as dt_parser
 from dotenv import load_dotenv
 from google.auth.transport.requests import Request
@@ -62,17 +69,40 @@ TIPLOC_FROM_CRS = {
 }
 TIPLOC_TO_NAME = {t: CRS_CODES[c] for c, t in TIPLOC_FROM_CRS.items()}
 
-_DARWIN_PP_ROOT = "http://www.thalesgroup.com/rtti/PushPort/v16"
-_DARWIN_PP_NS5  = "http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"
+_DARWIN_HOST = "darwin-dist-44ae45.nationalrail.co.uk"
+_DARWIN_SFTP_PORT = 2222
+_DARWIN_SFTP_USER = "sftpuser"
+_DARWIN_STOMP_PORT = 61613
+_DARWIN_PP_NS5 = "http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"
+_DARWIN_TOPIC = "/topic/darwin.pushport-v16"
+_DARWIN_SNAPSHOT = "snapshot/snapshot.gz"
+_DARWIN_REQUIRED_ENV = ("DARWIN_SFTP_PASS", "DARWIN_STOMP_USER", "DARWIN_STOMP_PASS")
+_TRACKED_TIPLOCS = frozenset(TIPLOC_FROM_CRS.values())
+_TRACKED_TPL_RE = re.compile(
+    rb'tpl="(?:' + b"|".join(t.encode() for t in _TRACKED_TIPLOCS) + rb')"'
+)
 
 # ── Caching ────────────────────────────────────────────────────────────────────
 
 _lock = threading.Lock()
 _weather_cache: TTLCache = TTLCache(maxsize=4, ttl=1800)
 _menu_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
-_departures_cache: TTLCache = TTLCache(maxsize=20, ttl=60)
-_snapshot_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
 _calendar_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+
+# ── Darwin live state ─────────────────────────────────────────────────────────
+
+log = logging.getLogger("darwin")
+
+# rid -> {"dest": tiploc, "calls": {tiploc: {"ptd", "std", "can"}},
+#         "fc": {tiploc: {"et", "at", "delayed", "plat"}}}
+_services: dict[str, dict] = {}
+_darwin_lock = threading.Lock()
+_darwin_status: dict = {
+    "ready": False,
+    "connected": False,
+    "last_message": None,
+    "error": None,
+}
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
 
@@ -174,119 +204,266 @@ def get_weather(lat: float, lon: float) -> dict:
     return result
 
 
-def _fetch_snapshot() -> str:
-    with _lock:
-        if "xml" in _snapshot_cache:
-            return _snapshot_cache["xml"]
+# ── Darwin live departures ────────────────────────────────────────────────────
+#
+# The Push Port stream only carries changes, so on every (re)connect the state is
+# rebuilt from the SFTP snapshot plus the pushport logs written since, then kept
+# current from the stream.
+
+
+def _now_london() -> datetime.datetime:
+    return datetime.datetime.now(_LONDON).replace(tzinfo=None)
+
+
+def _nearest(ref: datetime.datetime, hhmm: str) -> datetime.datetime:
+    """The datetime at clock time `hhmm` closest to `ref`, so times crossing midnight land on the right day."""
+    t = ref.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:5]), second=0, microsecond=0)
+    if t - ref > datetime.timedelta(hours=12):
+        return t - datetime.timedelta(days=1)
+    if ref - t > datetime.timedelta(hours=12):
+        return t + datetime.timedelta(days=1)
+    return t
+
+
+def _apply_schedule(msg: ET.Element, services: dict) -> None:
+    rid = msg.get("rid")
+    if msg.get("deleted") == "true":
+        services.pop(rid, None)
+        return
+    ref, dest, calls = None, None, {}
+    for loc in msg:
+        working = loc.get("wtd") or loc.get("wta") or loc.get("wtp")
+        if not working:
+            continue
+        ref = (
+            _nearest(ref, working)
+            if ref
+            else datetime.datetime.fromisoformat(f"{msg.get('ssd')}T{working[:5]}")
+        )
+        tag, tpl = loc.tag.split("}")[-1], loc.get("tpl")
+        if tag == "DT":
+            dest = tpl
+        if tpl in _TRACKED_TIPLOCS and tag in ("OR", "IP") and loc.get("ptd"):
+            calls[tpl] = {
+                "ptd": loc.get("ptd"),
+                "std": _nearest(ref, loc.get("ptd")),
+                "can": loc.get("can") == "true",
+            }
+    if not calls:
+        services.pop(rid, None)
+        return
+    services.setdefault(rid, {"fc": {}}).update(dest=dest, calls=calls)
+
+
+def _apply_ts(msg: ET.Element, services: dict) -> None:
+    for loc in msg.findall(f"{{{_DARWIN_PP_NS5}}}Location"):
+        if loc.get("tpl") not in _TRACKED_TIPLOCS or not loc.get("wtd"):
+            continue
+        svc = services.setdefault(msg.get("rid"), {"dest": None, "calls": {}, "fc": {}})
+        fc = svc["fc"].setdefault(loc.get("tpl"), {})
+        dep = loc.find(f"{{{_DARWIN_PP_NS5}}}dep")
+        if dep is not None:
+            fc["et"] = dep.get("et")
+            fc["at"] = None if dep.get("atRemoved") == "true" else dep.get("at")
+            fc["delayed"] = "true" in (dep.get("delayed"), dep.get("etUnknown"))
+        plat = loc.find(f"{{{_DARWIN_PP_NS5}}}plat")
+        if plat is not None:
+            suppressed = "true" in (plat.get("platsup"), plat.get("cisPlatsup"))
+            fc["plat"] = None if suppressed else plat.text
+
+
+def _apply_pushport(xml: bytes, services: dict) -> None:
+    """Fold one Push Port document into `services`."""
+    if not _TRACKED_TPL_RE.search(xml) and b"<deactivated" not in xml:
+        return
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return
+    for response in root:  # sR in the snapshot, uR in logs and the stream
+        for msg in response:
+            tag = msg.tag.split("}")[-1]
+            if tag == "schedule":
+                _apply_schedule(msg, services)
+            elif tag == "TS":
+                _apply_ts(msg, services)
+            elif tag == "deactivated":
+                services.pop(msg.get("rid"), None)
+
+
+def _prune_services(services: dict, now: datetime.datetime) -> None:
+    cutoff = now - datetime.timedelta(hours=3)
+    stale = [
+        rid
+        for rid, svc in services.items()
+        if not svc["calls"] or max(c["std"] for c in svc["calls"].values()) < cutoff
+    ]
+    for rid in stale:
+        del services[rid]
+
+
+@contextlib.contextmanager
+def _darwin_sftp():
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(
-        os.environ.get("DARWIN_SFTP_HOST", "darwin-dist-44ae45.nationalrail.co.uk"),
-        port=int(os.environ.get("DARWIN_SFTP_PORT", "2222")),
-        username=os.environ.get("DARWIN_SFTP_USER", "sftpuser"),
-        password=os.environ.get("DARWIN_SFTP_PASS", "P3RSeYeod!0"),
+        _DARWIN_HOST,
+        port=_DARWIN_SFTP_PORT,
+        username=_DARWIN_SFTP_USER,
+        password=os.environ["DARWIN_SFTP_PASS"],
+        timeout=30,
     )
-    sftp = ssh.open_sftp()
+    try:
+        yield ssh.open_sftp()
+    finally:
+        ssh.close()
+
+
+def _read_gz_lines(sftp: paramiko.SFTPClient, path: str) -> list[bytes]:
     buf = io.BytesIO()
-    sftp.getfo("snapshot/snapshot.gz", buf)
-    sftp.close()
-    ssh.close()
-    buf.seek(0)
-    xml = gzip.decompress(buf.read()).decode("utf-8")
-    with _lock:
-        _snapshot_cache["xml"] = xml
-    return xml
+    sftp.getfo(path, buf)
+    return gzip.decompress(buf.getvalue()).splitlines()
+
+
+def _load_darwin_state() -> dict:
+    """Build state from the snapshot and the pushport logs written after it."""
+    services: dict = {}
+    with _darwin_sftp() as sftp:
+        snapshot_mtime = sftp.stat(_DARWIN_SNAPSHOT).st_mtime
+        logs = sorted(
+            f"pushport/{a.filename}"
+            for a in sftp.listdir_attr("pushport")
+            if a.filename.endswith(".gz") and a.st_mtime >= snapshot_mtime
+        )
+        for path in [_DARWIN_SNAPSHOT, *logs]:
+            for line in _read_gz_lines(sftp, path):
+                _apply_pushport(line, services)
+    return services
+
+
+class _DarwinListener(stomp.ConnectionListener):
+    def __init__(self, inbox: queue.Queue):
+        self.inbox = inbox
+        self.error: str | None = None
+
+    def on_message(self, frame):
+        self.inbox.put(frame.body)
+
+    def on_error(self, frame):
+        self.error = frame.headers.get("message") or "Darwin stream error"
+        log.error("Darwin stream error: %s", self.error)
+
+
+def _connect_stomp(listener: _DarwinListener) -> stomp.Connection12:
+    conn = stomp.Connection12(
+        [(_DARWIN_HOST, _DARWIN_STOMP_PORT)],
+        heartbeats=(15_000, 15_000),
+        auto_decode=False,
+    )
+    conn.set_listener("darwin", listener)
+    try:
+        conn.connect(
+            username=os.environ["DARWIN_STOMP_USER"],
+            passcode=os.environ["DARWIN_STOMP_PASS"],
+            wait=True,
+        )
+    except stomp.exception.ConnectFailedException:
+        raise ConnectionError(listener.error or "Could not connect to Darwin stream") from None
+    conn.subscribe(_DARWIN_TOPIC, id="1", ack="auto")
+    return conn
+
+
+def _follow_darwin_feed() -> None:
+    global _services
+    inbox: queue.Queue[bytes] = queue.Queue()
+    # Subscribe before loading so messages sent during the SFTP download are queued
+    conn = _connect_stomp(_DarwinListener(inbox))
+    _darwin_status.update(connected=True, error=None)
+    try:
+        log.info("Connected to Darwin stream; loading state from SFTP")
+        services = _load_darwin_state()
+        with _darwin_lock:
+            _services = services
+        _darwin_status["ready"] = True
+        log.info("Darwin state loaded (%d services)", len(services))
+        next_prune = time.time()
+        while conn.is_connected():
+            try:
+                xml = zlib.decompress(inbox.get(timeout=5), zlib.MAX_WBITS | 32)
+            except queue.Empty:
+                pass
+            else:
+                with _darwin_lock:
+                    _apply_pushport(xml, services)
+                _darwin_status["last_message"] = datetime.datetime.now(_LONDON)
+            if time.time() >= next_prune:
+                next_prune = time.time() + 600
+                with _darwin_lock:
+                    _prune_services(services, _now_london())
+    finally:
+        _darwin_status["connected"] = False
+        if conn.is_connected():
+            conn.disconnect()
+
+
+def _run_darwin_feed() -> None:
+    while True:
+        try:
+            _follow_darwin_feed()
+            log.warning("Darwin stream disconnected")
+        except Exception as ex:
+            log.exception("Darwin feed failed")
+            _darwin_status["error"] = str(ex) or type(ex).__name__
+        time.sleep(30)
+
+
+def _departures_from(
+    services: dict, depart_tpl: str, dest_tpl: str | None, now: datetime.datetime
+) -> list[dict]:
+    rows = []
+    for svc in services.values():
+        call = svc["calls"].get(depart_tpl)
+        if not call or (dest_tpl and svc["dest"] != dest_tpl):
+            continue
+        fc = svc["fc"].get(depart_tpl, {})
+        if fc.get("at"):
+            continue  # already departed
+        std = call["std"]
+        etd = _nearest(std, fc["et"]) if fc.get("et") else std
+        if max(std, etd) < now - datetime.timedelta(minutes=1):
+            continue
+        if call["can"]:
+            status = "Cancelled"
+        elif fc.get("delayed"):
+            status = "Delayed"
+        elif etd > std:
+            status = etd.strftime("%H:%M")
+        else:
+            status = "On time"
+        rows.append(
+            (
+                std,
+                {
+                    "Time": call["ptd"],
+                    "Destination": TIPLOC_TO_NAME.get(svc["dest"], svc["dest"] or "—"),
+                    "Platform": fc.get("plat") or "—",
+                    "ETD": status,
+                },
+            )
+        )
+    rows.sort(key=lambda r: r[0])
+    return [row for _, row in rows]
 
 
 def get_departures(depart_crs: str, dest_crs: str | None = None) -> tuple[str, list[dict]]:
-    key = (depart_crs, dest_crs)
-    with _lock:
-        if key in _departures_cache:
-            return _departures_cache[key]
-
-    depart_tiploc = TIPLOC_FROM_CRS.get(depart_crs, depart_crs)
-    dest_tiploc = TIPLOC_FROM_CRS.get(dest_crs) if dest_crs else None
-    xml = _fetch_snapshot()
-
-    schedules: dict[str, dict] = {}
-    forecasts: dict[str, dict] = {}
-
-    for line in xml.splitlines():
-        if depart_tiploc not in line:
-            continue
-        try:
-            root = ET.fromstring(line.split("?>", 1)[1] if "?>" in line else line)
-        except ET.ParseError:
-            continue
-        sr = root.find(f"{{{_DARWIN_PP_ROOT}}}sR")
-        if sr is None:
-            continue
-
-        sched = sr.find(f"{{{_DARWIN_PP_ROOT}}}schedule")
-        if sched is not None:
-            rid = sched.get("rid")
-            ssd = sched.get("ssd", "")
-            ptd_here = None
-            cancelled_here = False
-            dest_tpl = None
-            for child in sched:
-                tag = child.tag.split("}")[-1]
-                tpl = child.get("tpl", "")
-                if tpl == depart_tiploc and tag in ("IP", "OR"):
-                    ptd_here = child.get("ptd") or child.get("wtd")
-                    cancelled_here = child.get("can") == "true"
-                if tag in ("DT", "OPDT"):
-                    dest_tpl = tpl
-            if ptd_here:
-                schedules[rid] = {
-                    "ptd": ptd_here,
-                    "ssd": ssd,
-                    "dest_tpl": dest_tpl,
-                    "cancelled": cancelled_here,
-                }
-
-        ts = sr.find(f"{{{_DARWIN_PP_ROOT}}}TS")
-        if ts is not None:
-            rid = ts.get("rid")
-            for loc in ts.findall(f"{{{_DARWIN_PP_NS5}}}Location"):
-                if loc.get("tpl") == depart_tiploc:
-                    dep = loc.find(f"{{{_DARWIN_PP_NS5}}}dep")
-                    plat = loc.find(f"{{{_DARWIN_PP_NS5}}}plat")
-                    if dep is not None:
-                        forecasts[rid] = {
-                            "etd": dep.get("at") or dep.get("et") or "",
-                            "is_actual": dep.get("at") is not None,
-                            "platform": plat.text if plat is not None else "—",
-                        }
-
-    now = datetime.datetime.now(_LONDON)
-    departures = []
-    for rid, s in schedules.items():
-        if dest_tiploc and s["dest_tpl"] != dest_tiploc:
-            continue
-        try:
-            sched_dt = _LONDON.localize(
-                datetime.datetime.strptime(f"{s['ssd']} {s['ptd']}", "%Y-%m-%d %H:%M")
-            )
-        except ValueError:
-            continue
-        if sched_dt < now - datetime.timedelta(minutes=2):
-            continue
-        fc = forecasts.get(rid, {})
-        etd = fc.get("etd", s["ptd"])
-        departures.append({
-            "Time": s["ptd"],
-            "Destination": TIPLOC_TO_NAME.get(s["dest_tpl"], s["dest_tpl"] or "—"),
-            "Platform": fc.get("platform", "—"),
-            "ETD": "On time" if etd == s["ptd"] else ("Arrived" if fc.get("is_actual") else etd),
-            "Cancelled": "Yes" if s["cancelled"] else "",
-        })
-
-    departures.sort(key=lambda x: x["Time"])
-    result = (CRS_CODES.get(depart_crs, depart_crs), departures)
-    with _lock:
-        _departures_cache[key] = result
-    return result
+    with _darwin_lock:
+        departures = _departures_from(
+            _services,
+            TIPLOC_FROM_CRS.get(depart_crs, depart_crs),
+            TIPLOC_FROM_CRS.get(dest_crs) if dest_crs else None,
+            _now_london(),
+        )
+    return CRS_CODES.get(depart_crs, depart_crs), departures
 
 
 def _load_menu_sheet() -> pd.DataFrame:
@@ -405,13 +582,39 @@ HEADER_STYLE = {
 ROW_STYLE = {"fontSize": "1.05rem", "padding": "0.75rem 1rem"}
 
 
-def _table(df: pd.DataFrame) -> dbc.Table:
-    return dbc.Table.from_dataframe(
-        df,
-        striped=True,
-        hover=True,
-        responsive=True,
-        style={"fontSize": "1.05rem", "marginBottom": 0},
+TABLE_STYLE = {
+    "striped": True,
+    "hover": True,
+    "responsive": True,
+    "style": {"fontSize": "1.05rem", "marginBottom": 0},
+}
+TRAIN_COLUMNS = ["Time", "Destination", "Platform", "ETD"]
+
+
+def _table(df: pd.DataFrame, index: bool = False) -> dbc.Table:
+    return dbc.Table.from_dataframe(df, index=index, index_label="", **TABLE_STYLE)
+
+
+def _trains_table(departures: list[dict], now: datetime.datetime) -> dbc.Table:
+    """The next train is orange if it leaves within 10 minutes; delays and cancellations are red."""
+    rows = []
+    for i, train in enumerate(departures):
+        etd = train["ETD"]
+        leaves = _nearest(now, etd if re.fullmatch(r"\d\d:\d\d", etd) else train["Time"])
+        leaving_soon = i == 0 and leaves - now <= datetime.timedelta(minutes=10)
+        cells = []
+        for col in TRAIN_COLUMNS:
+            if col == "ETD" and etd != "On time":
+                color = "var(--bs-danger)"
+            elif leaving_soon:
+                color = "var(--bs-warning)"
+            else:
+                color = None
+            cells.append(html.Td(train[col], style={"color": color}) if color else html.Td(train[col]))
+        rows.append(html.Tr(cells))
+    return dbc.Table(
+        [html.Thead(html.Tr([html.Th(c) for c in TRAIN_COLUMNS])), html.Tbody(rows)],
+        **TABLE_STYLE,
     )
 
 
@@ -424,6 +627,8 @@ def _warn(msg: str) -> dbc.Alert:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
+
+SERVER_STARTED = str(time.time_ns())
 
 app = dash.Dash(
     __name__,
@@ -449,11 +654,14 @@ app.layout = dbc.Container(
     children=[
         # Intervals + calendar store
         dcc.Interval(id="int-clock", interval=1_000),
-        dcc.Interval(id="int-trains", interval=60_000),
+        dcc.Interval(id="int-trains", interval=15_000),
         dcc.Interval(id="int-weather", interval=1_800_000),
         dcc.Interval(id="int-slow", interval=300_000),
         dcc.Store(id="calendar-store"),
         html.Div(id="fc-dummy", style={"display": "none"}),
+        dcc.Interval(id="int-server", interval=10_000),
+        dcc.Store(id="server-started-latest"),
+        dcc.Store(id="server-started-seen"),
         # ── Header ────────────────────────────────────────────────────────────────
         html.Div(
             style={
@@ -695,6 +903,25 @@ clientside_callback(
 )
 
 
+# Reload open pages when the dashboard restarts, so they pick up the new version
+@app.callback(Output("server-started-latest", "data"), Input("int-server", "n_intervals"))
+def report_server_started(_):
+    return SERVER_STARTED
+
+
+clientside_callback(
+    """function(latest, seen) {
+        if (seen && latest && latest !== seen) {
+            window.location.reload();
+        }
+        return latest || seen;
+    }""",
+    Output("server-started-seen", "data"),
+    Input("server-started-latest", "data"),
+    State("server-started-seen", "data"),
+)
+
+
 @app.callback(
     Output({"type": "collapse", "id": MATCH}, "is_open"),
     Input({"type": "toggle", "id": MATCH}, "n_clicks"),
@@ -753,6 +980,22 @@ clientside_callback(
 
 
 @app.callback(
+    Output("int-trains", "interval"),
+    Input("int-trains", "n_intervals"),
+    State("int-trains", "interval"),
+)
+def update_trains_interval(_, current):
+    """Check every second while live train data loads at startup, then every 15 seconds."""
+    loading = (
+        not _darwin_status["ready"]
+        and not _darwin_status["error"]
+        and all(os.environ.get(k) for k in _DARWIN_REQUIRED_ENV)
+    )
+    interval = 1_000 if loading else 15_000
+    return dash.no_update if interval == current else interval
+
+
+@app.callback(
     Output("trains-content", "children"),
     Input("int-trains", "n_intervals"),
     Input("btn-refresh-trains", "n_clicks"),
@@ -760,21 +1003,35 @@ clientside_callback(
     Input("dest", "value"),
 )
 def update_trains(_, __, depart, dest):
-    if ctx.triggered_id == "btn-refresh-trains":
-        with _lock:
-            _departures_cache.pop((depart, dest), None)
-            _snapshot_cache.clear()
-    try:
-        location, departures = get_departures(depart, dest)
-    except Exception as ex:
-        return _error(f"Rail API error: {ex}")
+    missing = [k for k in _DARWIN_REQUIRED_ENV if not os.environ.get(k)]
+    if missing:
+        return _error(f"{', '.join(missing)} not set.")
+    status = dict(_darwin_status)
+    if not status["ready"]:
+        if status["error"]:
+            return _error(f"Rail feed error: {status['error']}")
+        return dbc.Alert("Loading live train data…", color="info", className="mb-0")
+    location, departures = get_departures(depart, dest)
+    last = status["last_message"]
+    as_of = last.strftime("%H:%M:%S") if last else "—"
+    children = []
+    if not status["connected"]:
+        children.append(
+            _warn(f"Live feed disconnected, reconnecting. Showing data as of {as_of}.")
+        )
+    elif not last or datetime.datetime.now(_LONDON) - last > datetime.timedelta(minutes=2):
+        children.append(_warn(f"No live updates since {as_of}."))
     if not departures:
-        return _warn("No trains to the selected destination.")
-    as_of = datetime.datetime.now(_LONDON).strftime("%H:%M:%S")
-    return html.Div([
-        html.Small(f"From {location} as of {as_of}", className="text-muted d-block mb-2"),
-        _table(pd.DataFrame(departures[:5])),
-    ])
+        children.append(_warn("No trains to the selected destination."))
+        return html.Div(children)
+    children += [
+        html.Small(
+            f"From {location} · live, last update {as_of}",
+            className="text-muted d-block mb-2",
+        ),
+        _trains_table(departures[:5], _now_london()),
+    ]
+    return html.Div(children)
 
 
 @app.callback(
@@ -821,7 +1078,7 @@ def update_weather(_):
             }
         if not rows:
             return _warn("No forecast data available.")
-        return _table(pd.DataFrame(rows))
+        return _table(pd.DataFrame(rows), index=True)
     except Exception as ex:
         return _error(f"Weather error: {ex}")
 
@@ -886,4 +1143,7 @@ def update_schedule(_):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
+    if all(os.environ.get(k) for k in _DARWIN_REQUIRED_ENV):
+        threading.Thread(target=_run_darwin_feed, name="darwin-feed", daemon=True).start()
     app.run(host="0.0.0.0", port=8050, debug=False)

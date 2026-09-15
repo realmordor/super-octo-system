@@ -1,6 +1,6 @@
 # super-octo-system
 
-A personal home dashboard built with Streamlit. Displays Google Calendar events, Met Office weather, National Rail departures, a weekly menu, household schedule, and a recipe finder — all in one page, auto-refreshing every 60 seconds.
+A personal home dashboard built with Dash. Displays Google Calendar events, Met Office weather, live National Rail departures, a weekly menu, household schedule, and a recipe finder — all in one page, refreshing automatically.
 
 ## Requirements
 
@@ -22,16 +22,19 @@ Fill in `.env`:
 ```
 MET_OFFICE_API_KEY=  # Met Office DataHub API key
 
-# Darwin Push Port SFTP credentials (see below)
-DARWIN_SFTP_HOST=darwin-dist-44ae45.nationalrail.co.uk
-DARWIN_SFTP_PORT=2222
-DARWIN_SFTP_USER=sftpuser
+# Darwin Push Port credentials (see below)
 DARWIN_SFTP_PASS=
+DARWIN_STOMP_USER=
+DARWIN_STOMP_PASS=
 ```
 
 **Getting Darwin Push Port credentials**
 
-Register at https://opendata.nationalrail.co.uk/feeds — create an account and subscribe to the **Darwin** feed. Once approved you will receive SFTP credentials (host, port, username, password) and access to the `snapshot/snapshot.gz` file which contains the full real-time train state. Fill the SFTP details into `.env`.
+1. Log in (or register) at https://opendata.nationalrail.co.uk and open **My Feeds**. Subscribe to the **Darwin** feed if you haven't already.
+2. From the FTP details, copy the password into `DARWIN_SFTP_PASS`.
+3. From **Darwin Topic Information**, copy **Username** and **Password** into `DARWIN_STOMP_USER` and `DARWIN_STOMP_PASS`. These are different from the FTP login.
+
+The train board uses the real-time Push Port stream (STOMP topic `darwin.pushport-v16`). The stream only sends changes, so on startup the dashboard loads the current state from the SFTP snapshot and the pushport logs written since, then keeps it up to date from the stream. The first board appears roughly 5–40 seconds after startup.
 
 **3. Set up Google Calendar credentials**
 
@@ -42,15 +45,15 @@ Register at https://opendata.nationalrail.co.uk/feeds — create an account and 
 ## Running the dashboard
 
 ```bash
-uv run streamlit run scripts/dashboard.py
+uv run python scripts/dash_dashboard.py
 ```
 
-To serve on your local network (e.g. for a wall-mounted display):
+Or start it in the background (logs go to `nohup_dash.out`):
 ```bash
-uv run streamlit run scripts/dashboard.py --server.address 0.0.0.0 --server.headless true
+./scripts/start_dash_dashboard.sh
 ```
 
-Then open `http://<your-server-ip>:8501` in any browser on the network.
+The dashboard listens on all interfaces, so open `http://<your-server-ip>:8050` in any browser on the network (e.g. for a wall-mounted display).
 
 ## Running as a background service
 
@@ -63,7 +66,7 @@ After=network.target
 [Service]
 User=squid
 WorkingDirectory=/home/squid/code/super-octo-system
-ExecStart=/home/squid/.local/bin/uv run streamlit run scripts/dashboard.py --server.address 0.0.0.0 --server.headless true
+ExecStart=/home/squid/.local/bin/uv run python scripts/dash_dashboard.py
 Restart=always
 
 [Install]
@@ -80,12 +83,12 @@ sudo systemctl start dashboard
 
 **Unit tests** (no network required):
 ```bash
-uv run pytest tests/test_dashboard.py -v
+uv run pytest tests/test_dash_dashboard.py -v
 ```
 
 **Integration tests** (hit real APIs — requires `.env` to be configured):
 ```bash
-uv run pytest tests/test_integration.py -v
+uv run pytest tests/test_integration_dash.py -v
 ```
 
 **All tests:**

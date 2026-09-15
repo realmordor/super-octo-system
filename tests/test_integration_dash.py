@@ -20,7 +20,6 @@ pytestmark = pytest.mark.integration
 def clear_caches():
     d._weather_cache.clear()
     d._menu_cache.clear()
-    d._departures_cache.clear()
     d._calendar_cache.clear()
     yield
 
@@ -125,37 +124,30 @@ def test_integration_weather_result_is_cached(met_office_key):
     assert first is second
 
 
-# ── National Rail API (requires DARWIN_LITE_TOKEN) ───────────────────────────
+# ── Darwin Push Port (requires DARWIN_SFTP_PASS / DARWIN_STOMP_USER / DARWIN_STOMP_PASS) ──
 
 
-@pytest.fixture
-def rail_token():
-    token = os.getenv("DARWIN_LITE_TOKEN")
-    if not token:
-        pytest.skip("DARWIN_LITE_TOKEN not set")
-    return token
+def _require_env(*keys):
+    missing = [k for k in keys if not os.getenv(k)]
+    if missing:
+        pytest.skip(f"{', '.join(missing)} not set")
 
 
-def test_integration_departures_returns_location_name(rail_token):
-    location, generated, services = d.get_departures("HDW", rail_token)
-    assert isinstance(location, str) and location
-    assert services is not None
+def test_integration_darwin_sftp_state_has_hadley_wood_calls():
+    _require_env("DARWIN_SFTP_PASS")
+    services = d._load_darwin_state()
+    assert any("HADLYWD" in svc["calls"] for svc in services.values())
 
 
-def test_integration_departures_services_have_expected_fields(rail_token):
-    _, _, services = d.get_departures("HDW", rail_token)
-    if not services:
-        pytest.skip("No services available right now")
-    train = services[0]
-    assert hasattr(train, "std")
-    assert hasattr(train, "etd")
-    assert hasattr(train, "destination")
+def test_integration_darwin_stream_logs_in_and_receives_messages():
+    import gzip
+    import queue
 
-
-def test_integration_departures_result_is_cached(rail_token):
-    from unittest.mock import patch
-
-    d.get_departures("HDW", rail_token)
-    with patch("scripts.dash_dashboard.Client") as mock_client:
-        d.get_departures("HDW", rail_token)
-    mock_client.assert_not_called()
+    _require_env("DARWIN_STOMP_USER", "DARWIN_STOMP_PASS")
+    inbox = queue.Queue()
+    conn = d._connect_stomp(d._DarwinListener(inbox))
+    try:
+        body = inbox.get(timeout=60)
+    finally:
+        conn.disconnect()
+    assert gzip.decompress(body).lstrip().startswith(b"<?xml")

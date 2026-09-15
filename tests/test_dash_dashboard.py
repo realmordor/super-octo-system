@@ -5,9 +5,13 @@ Run with:  uv run pytest tests/test_dash_dashboard.py
 """
 
 from unittest.mock import MagicMock, patch
+import datetime
+import gzip
+import queue
 import sys
 import urllib.parse
 
+import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
 import pytest
@@ -25,9 +29,9 @@ def clear_caches():
     """Reset TTL caches before each test to prevent state leakage."""
     d._weather_cache.clear()
     d._menu_cache.clear()
-    d._departures_cache.clear()
-    d._snapshot_cache.clear()
     d._calendar_cache.clear()
+    d._services.clear()
+    d._darwin_status.update(ready=False, connected=False, last_message=None, error=None)
     yield
 
 
@@ -69,32 +73,54 @@ def schedule_df():
     )
 
 
-def _make_snapshot(ssd: str, ptd: str, dest_tpl: str = "MRGT", cancelled: bool = False, etd: str | None = None) -> str:
+NOW = datetime.datetime(2026, 9, 15, 11, 50)
+
+
+def _pport(body: str) -> bytes:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16"'
+        ' xmlns:ns2="http://www.thalesgroup.com/rtti/PushPort/Schedules/v3"'
+        ' xmlns:ns5="http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"'
+        f' ts="2026-09-15T12:00:00+01:00" version="16.0"><uR>{body}</uR></Pport>'
+    ).encode()
+
+
+def _schedule(
+    rid: str = "RID1",
+    ssd: str = "2026-09-15",
+    origin: str = "11:40",
+    ptd: str = "12:00",
+    arrive: str = "12:40",
+    dest: str = "MRGT",
+    cancelled: bool = False,
+    deleted: bool = False,
+) -> bytes:
+    deleted_attr = ' deleted="true"' if deleted else ""
     can_attr = ' can="true"' if cancelled else ""
-    sched_line = (
-        f'<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16"'
-        f' xmlns:ns2="http://www.thalesgroup.com/rtti/PushPort/Schedules/v3"'
-        f' ts="2026-08-14T12:00:00+01:00" version="16.0">'
-        f'<sR><schedule rid="RID001" uid="A00001" ssd="{ssd}" toc="GN">'
-        f'<ns2:OR wtd="12:01" ptd="12:01" tpl="{dest_tpl}" act="TB"/>'
-        f'<ns2:IP wta="{ptd}" wtd="{ptd}" tpl="HADLYWD" pta="{ptd}" ptd="{ptd}"{can_attr}/>'
-        f'<ns2:DT wta="13:00" tpl="WLWYNGC" pta="13:00"/>'
-        f'</schedule></sR></Pport>'
+    return _pport(
+        f'<schedule rid="{rid}" uid="A1" ssd="{ssd}" toc="GN"{deleted_attr}>'
+        f'<ns2:OR wtd="{origin}" ptd="{origin}" tpl="WLWYNGC" act="TB"/>'
+        f'<ns2:PP wtp="{origin}:30" tpl="KNEBWTH"/>'
+        f'<ns2:IP wta="{ptd}" wtd="{ptd}:30" tpl="HADLYWD" pta="{ptd}" ptd="{ptd}"{can_attr}/>'
+        f'<ns2:DT wta="{arrive}" tpl="{dest}" pta="{arrive}"/>'
+        "</schedule>"
     )
-    if etd is None:
-        return sched_line
-    ts_line = (
-        f'\n<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16"'
-        f' xmlns:ns5="http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"'
-        f' ts="2026-08-14T12:00:00+01:00" version="16.0">'
-        f'<sR><TS rid="RID001" uid="A00001" ssd="{ssd}">'
-        f'<ns5:Location tpl="HADLYWD" wtd="{ptd}">'
-        f'<ns5:dep et="{etd}" src="Darwin"/><ns5:plat>2</ns5:plat>'
-        f'</ns5:Location></TS></sR></Pport>'
+
+
+def _ts(rid: str = "RID1", ptd: str = "12:00", dep: str | None = None, plat: str | None = None) -> bytes:
+    return _pport(
+        f'<TS rid="{rid}" uid="A1" ssd="2026-09-15">'
+        f'<ns5:Location tpl="HADLYWD" wta="{ptd}" wtd="{ptd}:30" pta="{ptd}" ptd="{ptd}">'
+        f"{dep or ''}{plat or ''}</ns5:Location></TS>"
     )
-    return sched_line + ts_line
+
+
+def _board(*messages: bytes, now: datetime.datetime = NOW, dest: str | None = "MRGT") -> list[dict]:
+    services: dict = {}
+    for m in messages:
+        d._apply_pushport(m, services)
+    return d._departures_from(services, "HADLYWD", dest, now)
 
 
 # ── _sheet_url ────────────────────────────────────────────────────────────────
@@ -379,154 +405,328 @@ def test_update_calendar_preserves_start_and_end():
     assert result[0]["end"] == "2026-05-20T11:00:00Z"
 
 
-# ── _fetch_snapshot ───────────────────────────────────────────────────────────
+# ── Darwin Push Port parsing ──────────────────────────────────────────────────
 
 
-def test_fetch_snapshot_downloads_and_decompresses():
-    import gzip, io
-    payload = gzip.compress(b"<xml/>")
-    mock_ssh = MagicMock()
-    mock_sftp = MagicMock()
-    mock_ssh.open_sftp.return_value = mock_sftp
-
-    def fake_getfo(path, buf):
-        buf.write(payload)
-
-    mock_sftp.getfo.side_effect = fake_getfo
-    with patch("scripts.dash_dashboard.paramiko.SSHClient", return_value=mock_ssh):
-        result = d._fetch_snapshot()
-    assert result == "<xml/>"
+def test_apply_pushport_ignores_messages_without_tracked_stations():
+    services: dict = {}
+    msg = _schedule().replace(b"HADLYWD", b"KNGX").replace(b"WLWYNGC", b"STEVNGE").replace(b"MRGT", b"CAMBDGE")
+    d._apply_pushport(msg, services)
+    assert services == {}
 
 
-def test_fetch_snapshot_uses_cache():
-    import gzip
-    payload = gzip.compress(b"<cached/>")
-    mock_ssh = MagicMock()
-    mock_sftp = MagicMock()
-    mock_ssh.open_sftp.return_value = mock_sftp
-
-    def fake_getfo(path, buf):
-        buf.write(payload)
-
-    mock_sftp.getfo.side_effect = fake_getfo
-    with patch("scripts.dash_dashboard.paramiko.SSHClient", return_value=mock_ssh):
-        d._fetch_snapshot()
-        d._fetch_snapshot()
-    mock_sftp.getfo.assert_called_once()
+def test_apply_pushport_records_public_calls_at_tracked_stations():
+    services: dict = {}
+    d._apply_pushport(_schedule(), services)
+    call = services["RID1"]["calls"]["HADLYWD"]
+    assert call["ptd"] == "12:00"
+    assert call["std"] == datetime.datetime(2026, 9, 15, 12, 0)
+    assert services["RID1"]["dest"] == "MRGT"
 
 
-# ── get_departures ────────────────────────────────────────────────────────────
+def test_apply_pushport_dates_calls_after_midnight_on_the_next_day():
+    services: dict = {}
+    d._apply_pushport(_schedule(origin="23:40", ptd="00:05", arrive="00:45"), services)
+    assert services["RID1"]["calls"]["HADLYWD"]["std"] == datetime.datetime(2026, 9, 16, 0, 5)
 
 
-def test_get_departures_finds_stopping_trains():
-    xml = _make_snapshot("2026-08-14", "23:59")
-    with patch.object(d, "_fetch_snapshot", return_value=xml):
-        with patch.object(d, "_LONDON", d._LONDON):
-            _, deps = d.get_departures("HDW", "WGC")
-    assert len(deps) == 1
-    assert deps[0]["Time"] == "23:59"
-    assert deps[0]["Destination"] == "Welwyn Garden City"
+def test_apply_pushport_removes_deleted_and_deactivated_services():
+    services: dict = {}
+    d._apply_pushport(_schedule(rid="A"), services)
+    d._apply_pushport(_schedule(rid="B"), services)
+    d._apply_pushport(_schedule(rid="A", deleted=True), services)
+    d._apply_pushport(_pport('<deactivated rid="B"/>'), services)
+    assert services == {}
 
 
-def test_get_departures_filters_by_destination():
-    xml = _make_snapshot("2026-08-14", "23:59", dest_tpl="MRGT")
-    with patch.object(d, "_fetch_snapshot", return_value=xml):
-        _, deps = d.get_departures("HDW", "MOG")
-    assert len(deps) == 0  # dest is WLWYNGC in schedule, not MRGT
+def test_apply_pushport_merges_partial_forecast_updates():
+    services: dict = {}
+    d._apply_pushport(_schedule(), services)
+    d._apply_pushport(_ts(dep='<ns5:dep et="12:03"/>', plat="<ns5:plat>2</ns5:plat>"), services)
+    d._apply_pushport(_ts(dep='<ns5:dep et="12:05"/>'), services)
+    assert services["RID1"]["fc"]["HADLYWD"] == {"et": "12:05", "at": None, "delayed": False, "plat": "2"}
 
 
-def test_get_departures_applies_forecast_etd():
-    xml = _make_snapshot("2026-08-14", "23:59", etd="00:05")
-    with patch.object(d, "_fetch_snapshot", return_value=xml):
-        _, deps = d.get_departures("HDW", "WGC")
-    assert deps[0]["ETD"] == "00:05"
-    assert deps[0]["Platform"] == "2"
+def test_apply_pushport_schedule_update_keeps_forecasts_received_first():
+    services: dict = {}
+    d._apply_pushport(_ts(dep='<ns5:dep et="12:04"/>'), services)
+    d._apply_pushport(_schedule(), services)
+    assert services["RID1"]["fc"]["HADLYWD"]["et"] == "12:04"
+    assert "HADLYWD" in services["RID1"]["calls"]
 
 
-def test_get_departures_on_time_when_etd_matches_ptd():
-    xml = _make_snapshot("2026-08-14", "23:59", etd="23:59")
-    with patch.object(d, "_fetch_snapshot", return_value=xml):
-        _, deps = d.get_departures("HDW", "WGC")
-    assert deps[0]["ETD"] == "On time"
+def test_prune_services_drops_old_services():
+    services: dict = {}
+    d._apply_pushport(_schedule(rid="OLD", origin="06:40", ptd="07:00", arrive="07:40"), services)
+    d._apply_pushport(_schedule(rid="NEW"), services)
+    d._prune_services(services, NOW)
+    assert list(services) == ["NEW"]
 
 
-def test_get_departures_marks_cancelled():
-    xml = _make_snapshot("2026-08-14", "23:59", cancelled=True)
-    with patch.object(d, "_fetch_snapshot", return_value=xml):
-        _, deps = d.get_departures("HDW", "WGC")
-    assert deps[0]["Cancelled"] == "Yes"
+# ── departure board ───────────────────────────────────────────────────────────
 
 
-def test_get_departures_skips_past_trains():
-    xml = _make_snapshot("2000-01-01", "08:00")
-    with patch.object(d, "_fetch_snapshot", return_value=xml):
-        _, deps = d.get_departures("HDW", "WGC")
-    assert deps == []
+def test_departures_on_time_train():
+    assert _board(_schedule(), _ts(plat="<ns5:plat>1</ns5:plat>")) == [
+        {"Time": "12:00", "Destination": "Moorgate", "Platform": "1", "ETD": "On time"}
+    ]
 
 
-def test_get_departures_uses_cache():
-    xml = _make_snapshot("2026-08-14", "23:59")
-    with patch.object(d, "_fetch_snapshot", return_value=xml) as mock_fetch:
-        d.get_departures("HDW", "WGC")
-        d.get_departures("HDW", "WGC")
-    mock_fetch.assert_called_once()
+def test_departures_filters_by_destination():
+    assert _board(_schedule(dest="WLWYNGC")) == []
+    assert len(_board(_schedule(dest="WLWYNGC"), dest=None)) == 1
+
+
+def test_departures_keeps_delayed_train_until_expected_time():
+    now = datetime.datetime(2026, 9, 15, 12, 6)
+    rows = _board(_schedule(), _ts(dep='<ns5:dep et="12:08"/>'), now=now)
+    assert rows[0]["ETD"] == "12:08"
+
+
+def test_departures_drops_departed_and_past_trains():
+    departed = _board(_schedule(), _ts(dep='<ns5:dep at="11:59"/>'))
+    past = _board(_schedule(origin="11:00", ptd="11:20", arrive="12:00"))
+    assert departed == [] and past == []
+
+
+def test_departures_shows_cancelled_delayed_and_suppressed_platform():
+    cancelled = _board(_schedule(cancelled=True))[0]
+    delayed = _board(_schedule(), _ts(dep='<ns5:dep et="12:00" delayed="true"/>'))[0]
+    suppressed = _board(_schedule(), _ts(plat='<ns5:plat platsup="true">3</ns5:plat>'))[0]
+    assert cancelled["ETD"] == "Cancelled"
+    assert delayed["ETD"] == "Delayed"
+    assert suppressed["Platform"] == "—"
+
+
+def test_departures_sorted_by_date_across_midnight():
+    now = datetime.datetime(2026, 9, 15, 23, 30)
+    rows = _board(
+        _schedule(rid="TOMORROW", ssd="2026-09-16", origin="05:40", ptd="06:00", arrive="06:40"),
+        _schedule(rid="AFTER_MIDNIGHT", origin="23:50", ptd="00:10", arrive="00:50"),
+        _schedule(rid="TONIGHT", origin="23:30", ptd="23:50", arrive="00:30"),
+        now=now,
+    )
+    assert [r["Time"] for r in rows] == ["23:50", "00:10", "06:00"]
+
+
+def test_get_departures_reads_live_state():
+    d._apply_pushport(_schedule(), d._services)
+    with patch.object(d, "_now_london", return_value=NOW):
+        location, rows = d.get_departures("HDW", "MOG")
+    assert location == "Hadley Wood"
+    assert rows[0]["Time"] == "12:00"
+
+
+# ── Darwin feed ───────────────────────────────────────────────────────────────
+
+
+def _fake_sftp(files: dict[str, tuple[float, bytes]]) -> MagicMock:
+    """files: path -> (mtime, uncompressed content)"""
+    sftp = MagicMock()
+    sftp.stat.side_effect = lambda path: MagicMock(st_mtime=files[path][0])
+    sftp.listdir_attr.return_value = [
+        MagicMock(filename=path.split("/", 1)[1], st_mtime=mtime)
+        for path, (mtime, _) in files.items()
+        if path.startswith("pushport/")
+    ]
+    sftp.getfo.side_effect = lambda path, buf: buf.write(gzip.compress(files[path][1]))
+    return sftp
+
+
+def _patch_sftp(sftp: MagicMock):
+    cm = MagicMock()
+    cm.__enter__.return_value = sftp
+    return patch.object(d, "_darwin_sftp", return_value=cm)
+
+
+def test_load_darwin_state_applies_snapshot_then_newer_logs_only():
+    sftp = _fake_sftp({
+        "snapshot/snapshot.gz": (100.0, _schedule()),
+        "pushport/old.gz": (50.0, _schedule(deleted=True)),
+        "pushport/new.gz": (200.0, _ts(dep='<ns5:dep et="12:04"/>')),
+    })
+    with _patch_sftp(sftp):
+        services = d._load_darwin_state()
+    assert services["RID1"]["fc"]["HADLYWD"]["et"] == "12:04"
+    assert [c.args[0] for c in sftp.getfo.call_args_list] == ["snapshot/snapshot.gz", "pushport/new.gz"]
+
+
+def test_darwin_listener_queues_messages_and_records_errors():
+    inbox: queue.Queue = queue.Queue()
+    listener = d._DarwinListener(inbox)
+    listener.on_message(MagicMock(body=b"payload"))
+    listener.on_error(MagicMock(headers={"message": "Invalid username or password"}))
+    assert inbox.get_nowait() == b"payload"
+    assert listener.error == "Invalid username or password"
+
+
+def test_follow_darwin_feed_loads_state_then_applies_stream():
+    conn = MagicMock()
+    conn.is_connected.side_effect = [True, False, False]
+
+    def fake_connect(listener):
+        listener.inbox.put(gzip.compress(_ts(dep='<ns5:dep et="12:07"/>')))
+        return conn
+
+    snapshot_state = {}
+    d._apply_pushport(_schedule(), snapshot_state)
+    with (
+        patch.object(d, "_connect_stomp", side_effect=fake_connect),
+        patch.object(d, "_load_darwin_state", return_value=snapshot_state),
+        patch.object(d, "_now_london", return_value=NOW),
+    ):
+        d._follow_darwin_feed()
+    assert d._services["RID1"]["fc"]["HADLYWD"]["et"] == "12:07"
+    assert d._darwin_status["ready"] is True
+    assert d._darwin_status["connected"] is False
+    assert d._darwin_status["last_message"] is not None
 
 
 # ── update_trains callback ────────────────────────────────────────────────────
 
 
+@pytest.fixture
+def darwin_env():
+    env = {k: "x" for k in d._DARWIN_REQUIRED_ENV}
+    with patch.dict("os.environ", env):
+        yield
+
+
 def _make_departure(time: str) -> dict:
-    return {"Time": time, "Destination": "Moorgate", "Platform": "1", "ETD": "On time", "Cancelled": ""}
+    return {"Time": time, "Destination": "Moorgate", "Platform": "1", "ETD": "On time"}
 
 
-def test_update_trains_returns_table_with_departures():
-    departures = [_make_departure("15:30")]
-    with patch.object(d, "get_departures", return_value=("Hadley Wood", departures)):
-        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-            mock_ctx.triggered_id = None
-            result = d.update_trains(1, 0, "HDW", "MOG")
-    assert isinstance(result, html.Div)
+def _live(**status):
+    d._darwin_status.update(
+        {"ready": True, "connected": True, "last_message": datetime.datetime.now(d._LONDON), **status}
+    )
 
 
-def test_update_trains_shows_at_most_five_rows():
+def test_update_trains_errors_when_credentials_missing():
+    env = {k: "" for k in d._DARWIN_REQUIRED_ENV}
+    with patch.dict("os.environ", env):
+        result = d.update_trains(1, 0, "HDW", "MOG")
+    assert isinstance(result, dbc.Alert)
+    assert result.color == "danger"
+    assert "DARWIN_STOMP_USER" in result.children
+
+
+def test_update_trains_shows_loading_until_state_ready(darwin_env):
+    result = d.update_trains(1, 0, "HDW", "MOG")
+    assert isinstance(result, dbc.Alert)
+    assert result.color == "info"
+
+
+def test_update_trains_shows_feed_error_before_ready(darwin_env):
+    d._darwin_status["error"] = "Invalid username or password"
+    result = d.update_trains(1, 0, "HDW", "MOG")
+    assert result.color == "danger"
+    assert "Invalid username or password" in result.children
+
+
+def test_update_trains_shows_at_most_five_rows(darwin_env):
+    _live()
     departures = [_make_departure(f"1{i}:00") for i in range(8)]
     with patch.object(d, "get_departures", return_value=("Hadley Wood", departures)):
-        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-            mock_ctx.triggered_id = None
-            result = d.update_trains(1, 0, "HDW", "MOG")
-    table = result.children[1]
+        result = d.update_trains(1, 0, "HDW", "MOG")
+    caption, table = result.children
+    assert "live" in caption.children
     rows = [c for c in table.children[1].children if hasattr(c, "children")]
     assert len(rows) == 5
 
 
-def test_update_trains_returns_warning_when_empty():
+def test_update_trains_warns_when_disconnected(darwin_env):
+    _live(connected=False)
+    with patch.object(d, "get_departures", return_value=("Hadley Wood", [_make_departure("15:30")])):
+        result = d.update_trains(1, 0, "HDW", "MOG")
+    assert result.children[0].color == "warning"
+    assert "disconnected" in result.children[0].children
+
+
+def test_update_trains_warns_when_updates_stall(darwin_env):
+    _live(last_message=datetime.datetime.now(d._LONDON) - datetime.timedelta(minutes=5))
+    with patch.object(d, "get_departures", return_value=("Hadley Wood", [_make_departure("15:30")])):
+        result = d.update_trains(1, 0, "HDW", "MOG")
+    assert "No live updates" in result.children[0].children
+
+
+def test_trains_interval_is_fast_while_live_data_loads(darwin_env):
+    assert d.update_trains_interval(1, 15_000) == 1_000
+    assert d.update_trains_interval(2, 1_000) is dash.no_update
+
+
+def test_trains_interval_is_normal_once_ready_or_failed(darwin_env):
+    _live()
+    assert d.update_trains_interval(1, 1_000) == 15_000
+    assert d.update_trains_interval(2, 15_000) is dash.no_update
+    d._darwin_status.update(ready=False, error="Invalid username or password")
+    assert d.update_trains_interval(3, 1_000) == 15_000
+
+
+def test_trains_interval_is_normal_without_credentials():
+    with patch.dict("os.environ", {k: "" for k in d._DARWIN_REQUIRED_ENV}):
+        assert d.update_trains_interval(1, 1_000) == 15_000
+
+
+def test_report_server_started_returns_this_process_start_id():
+    assert d.report_server_started(1) == d.SERVER_STARTED
+
+
+def test_update_trains_returns_warning_when_empty(darwin_env):
+    _live()
     with patch.object(d, "get_departures", return_value=("Hadley Wood", [])):
-        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-            mock_ctx.triggered_id = None
-            result = d.update_trains(1, 0, "HDW", "MOG")
-    assert isinstance(result, dbc.Alert)
-    assert result.color == "warning"
+        result = d.update_trains(1, 0, "HDW", "MOG")
+    assert result.children[-1].color == "warning"
 
 
-def test_update_trains_returns_error_on_api_failure():
-    with patch.object(d, "get_departures", side_effect=Exception("SFTP error")):
-        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-            mock_ctx.triggered_id = None
-            result = d.update_trains(1, 0, "HDW", "MOG")
-    assert isinstance(result, dbc.Alert)
-    assert result.color == "danger"
+# ── trains table colours ──────────────────────────────────────────────────────
 
 
-def test_update_trains_clears_cache_on_refresh():
-    departures = [{"Time": "15:30", "Destination": "Moorgate", "Platform": "1", "ETD": "On time", "Cancelled": ""}]
-    d._departures_cache[("HDW", "MOG")] = ("Hadley Wood", departures)
-    d._snapshot_cache["xml"] = "stale"
-    with patch.object(d, "get_departures", return_value=("Hadley Wood", departures)):
-        with patch("scripts.dash_dashboard.ctx") as mock_ctx:
-            mock_ctx.triggered_id = "btn-refresh-trains"
-            d.update_trains(1, 1, "HDW", "MOG")
-    assert ("HDW", "MOG") not in d._departures_cache
-    assert "xml" not in d._snapshot_cache
+def _row_colours(departures: list[dict], now: datetime.datetime) -> list[list[str | None]]:
+    table = d._trains_table(departures, now)
+    return [
+        [(getattr(td, "style", None) or {}).get("color") for td in tr.children]
+        for tr in table.children[1].children
+    ]
+
+
+ORANGE, RED = "var(--bs-warning)", "var(--bs-danger)"
+
+
+def test_trains_table_next_train_within_ten_minutes_is_orange():
+    departures = [_make_departure("12:00"), _make_departure("12:05")]
+    colours = _row_colours(departures, datetime.datetime(2026, 9, 15, 11, 52))
+    assert colours[0] == [ORANGE] * 4
+    assert colours[1] == [None] * 4  # only the next train is highlighted
+
+
+def test_trains_table_next_train_more_than_ten_minutes_away_is_plain():
+    colours = _row_colours([_make_departure("12:00")], datetime.datetime(2026, 9, 15, 11, 49))
+    assert colours[0] == [None] * 4
+
+
+def test_trains_table_uses_expected_time_for_delayed_next_train():
+    delayed = {**_make_departure("12:00"), "ETD": "12:15"}
+    not_yet = _row_colours([delayed], datetime.datetime(2026, 9, 15, 12, 3))
+    soon = _row_colours([delayed], datetime.datetime(2026, 9, 15, 12, 6))
+    assert not_yet[0] == [None, None, None, RED]
+    assert soon[0] == [ORANGE, ORANGE, ORANGE, RED]
+
+
+def test_trains_table_delays_and_cancellations_are_red():
+    departures = [
+        _make_departure("13:00"),
+        {**_make_departure("13:30"), "ETD": "Cancelled"},
+        {**_make_departure("14:00"), "ETD": "Delayed"},
+    ]
+    colours = _row_colours(departures, datetime.datetime(2026, 9, 15, 12, 0))
+    assert [row[3] for row in colours] == [None, RED, RED]
+    assert all(c is None for row in colours for c in row[:3])
+
+
+def test_trains_table_handles_next_train_after_midnight():
+    colours = _row_colours([_make_departure("00:04")], datetime.datetime(2026, 9, 15, 23, 58))
+    assert colours[0] == [ORANGE] * 4
 
 
 # ── update_weather callback ───────────────────────────────────────────────────
@@ -554,6 +754,16 @@ def test_update_weather_returns_table_with_valid_data():
     with patch.object(d, "get_weather", return_value=forecast):
         result = d.update_weather(1)
     assert isinstance(result, dbc.Table)
+    assert {"Feels Like (°C)", "Precip (%)"} <= set(_texts(result))
+
+
+def _texts(component) -> list[str]:
+    children = getattr(component, "children", component)
+    if isinstance(children, str):
+        return [children]
+    if isinstance(children, (list, tuple)):
+        return [t for child in children for t in _texts(child)]
+    return _texts(children) if children is not None and children is not component else []
 
 
 def test_update_weather_returns_error_on_exception():
