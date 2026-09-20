@@ -690,43 +690,58 @@ def _row_colours(departures: list[dict], now: datetime.datetime) -> list[list[st
     ]
 
 
-ORANGE, RED = "var(--bs-warning)", "var(--bs-danger)"
+RED, GREEN = "var(--bs-danger)", "var(--bs-success)"
 
 
-def test_trains_table_next_train_within_ten_minutes_is_orange():
-    departures = [_make_departure("12:00"), _make_departure("12:05")]
+def test_trains_table_row_is_red_within_ten_minutes():
+    departures = [_make_departure("12:00"), _make_departure("12:05"), _make_departure("12:30")]
     colours = _row_colours(departures, datetime.datetime(2026, 9, 15, 11, 52))
-    assert colours[0] == [ORANGE] * 4
-    assert colours[1] == [None] * 4  # only the next train is highlighted
+    assert colours[0] == [RED] * 4  # 8 minutes away
+    assert colours[1] == [GREEN] * 4  # 13 minutes away
+    assert colours[2] == [None] * 4  # 38 minutes away
 
 
-def test_trains_table_next_train_more_than_ten_minutes_away_is_plain():
-    colours = _row_colours([_make_departure("12:00")], datetime.datetime(2026, 9, 15, 11, 49))
-    assert colours[0] == [None] * 4
+def test_trains_table_row_is_green_between_ten_and_twenty_minutes():
+    at_ten = _row_colours([_make_departure("12:00")], datetime.datetime(2026, 9, 15, 11, 50))
+    just_over_ten = _row_colours([_make_departure("12:00")], datetime.datetime(2026, 9, 15, 11, 49))
+    at_twenty = _row_colours([_make_departure("12:00")], datetime.datetime(2026, 9, 15, 11, 40))
+    just_over_twenty = _row_colours([_make_departure("12:00")], datetime.datetime(2026, 9, 15, 11, 39))
+    assert at_ten[0] == [RED] * 4
+    assert just_over_ten[0] == [GREEN] * 4
+    assert at_twenty[0] == [GREEN] * 4
+    assert just_over_twenty[0] == [None] * 4
 
 
-def test_trains_table_uses_expected_time_for_delayed_next_train():
-    delayed = {**_make_departure("12:00"), "ETD": "12:15"}
-    not_yet = _row_colours([delayed], datetime.datetime(2026, 9, 15, 12, 3))
-    soon = _row_colours([delayed], datetime.datetime(2026, 9, 15, 12, 6))
-    assert not_yet[0] == [None, None, None, RED]
-    assert soon[0] == [ORANGE, ORANGE, ORANGE, RED]
+def test_trains_table_colours_every_row_not_just_the_first():
+    departures = [_make_departure("12:00"), _make_departure("12:01")]
+    colours = _row_colours(departures, datetime.datetime(2026, 9, 15, 11, 52))
+    assert colours[0] == [RED] * 4
+    assert colours[1] == [RED] * 4
 
 
-def test_trains_table_delays_and_cancellations_are_red():
-    departures = [
-        _make_departure("13:00"),
-        {**_make_departure("13:30"), "ETD": "Cancelled"},
-        {**_make_departure("14:00"), "ETD": "Delayed"},
-    ]
-    colours = _row_colours(departures, datetime.datetime(2026, 9, 15, 12, 0))
-    assert [row[3] for row in colours] == [None, RED, RED]
-    assert all(c is None for row in colours for c in row[:3])
+def test_trains_table_cancelled_row_is_red_whenever_it_runs():
+    cancelled = {**_make_departure("13:00"), "ETD": "Cancelled"}
+    colours = _row_colours([cancelled], datetime.datetime(2026, 9, 15, 12, 0))
+    assert colours[0] == [RED] * 4
 
 
-def test_trains_table_handles_next_train_after_midnight():
+def test_trains_table_uses_expected_time_when_delayed():
+    delayed = {**_make_departure("12:00"), "ETD": "12:25"}
+    on_scheduled_time = _row_colours([delayed], datetime.datetime(2026, 9, 15, 11, 55))
+    near_expected_time = _row_colours([delayed], datetime.datetime(2026, 9, 15, 12, 18))
+    assert on_scheduled_time[0] == [None, None, None, RED]  # 30 minutes from the delayed time
+    assert near_expected_time[0] == [RED] * 4
+
+
+def test_trains_table_delay_stays_red_on_a_green_row():
+    delayed = {**_make_departure("12:00"), "ETD": "Delayed"}
+    colours = _row_colours([delayed], datetime.datetime(2026, 9, 15, 11, 45))
+    assert colours[0] == [GREEN, GREEN, GREEN, RED]
+
+
+def test_trains_table_handles_train_after_midnight():
     colours = _row_colours([_make_departure("00:04")], datetime.datetime(2026, 9, 15, 23, 58))
-    assert colours[0] == [ORANGE] * 4
+    assert colours[0] == [RED] * 4
 
 
 # ── update_weather callback ───────────────────────────────────────────────────

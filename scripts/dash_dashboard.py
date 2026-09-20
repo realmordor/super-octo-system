@@ -608,20 +608,21 @@ def _link_urls(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _trains_table(departures: list[dict], now: datetime.datetime) -> dbc.Table:
-    """The next train is orange if it leaves within 10 minutes; delays and cancellations are red."""
+    """Rows go red when cancelled or leaving within 10 minutes, green from 10 to 20 minutes away."""
     rows = []
-    for i, train in enumerate(departures):
+    for train in departures:
         etd = train["ETD"]
         leaves = _nearest(now, etd if re.fullmatch(r"\d\d:\d\d", etd) else train["Time"])
-        leaving_soon = i == 0 and leaves - now <= datetime.timedelta(minutes=10)
+        minutes = (leaves - now).total_seconds() / 60
+        if etd == "Cancelled" or minutes <= 10:
+            row_color = "var(--bs-danger)"
+        elif minutes <= 20:
+            row_color = "var(--bs-success)"
+        else:
+            row_color = None
         cells = []
         for col in TRAIN_COLUMNS:
-            if col == "ETD" and etd != "On time":
-                color = "var(--bs-danger)"
-            elif leaving_soon:
-                color = "var(--bs-warning)"
-            else:
-                color = None
+            color = "var(--bs-danger)" if col == "ETD" and etd != "On time" else row_color
             cells.append(html.Td(train[col], style={"color": color}) if color else html.Td(train[col]))
         rows.append(html.Tr(cells))
     return dbc.Table(
