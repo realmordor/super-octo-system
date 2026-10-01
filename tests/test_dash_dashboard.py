@@ -455,6 +455,55 @@ def test_apply_pushport_schedule_update_keeps_forecasts_received_first():
     assert "HADLYWD" in services["RID1"]["calls"]
 
 
+def test_apply_pushport_records_arrivals_at_tracked_stations():
+    services: dict = {}
+    d._apply_pushport(_schedule(arrive="12:40"), services)
+    arrs = services["RID1"]["arrs"]
+    assert arrs["MRGT"] == {"pta": "12:40", "sta": datetime.datetime(2026, 9, 15, 12, 40)}
+    assert arrs["HADLYWD"]["pta"] == "12:00"
+
+
+def test_apply_pushport_records_arrival_forecasts_at_the_destination():
+    services: dict = {}
+    d._apply_pushport(_schedule(), services)
+    d._apply_pushport(
+        _pport(
+            '<TS rid="RID1" uid="A1" ssd="2026-09-15">'
+            '<ns5:Location tpl="MRGT" wta="12:40" pta="12:40"><ns5:arr et="12:44"/></ns5:Location></TS>'
+        ),
+        services,
+    )
+    assert services["RID1"]["fc"]["MRGT"] == {"arr_et": "12:44", "arr_at": None}
+
+
+def _station_message(msg_id: str = "1", crs: tuple[str, ...] = ("HDW",), text: str = "Lifts out of order") -> bytes:
+    stations = "".join(f'<ns7:Station crs="{c}"/>' for c in crs)
+    body = f"<ns7:Msg>{text}</ns7:Msg>" if text else ""
+    return _pport(
+        f'<OW xmlns:ns7="http://www.thalesgroup.com/rtti/PushPort/StationMessages/v1" id="{msg_id}" cat="Station" sev="1">'
+        f"{stations}{body}</OW>"
+    )
+
+
+def test_apply_pushport_keeps_station_messages_for_tracked_stations():
+    messages: dict = {}
+    d._apply_pushport(_station_message(crs=("HDW", "KGX")), {}, messages)
+    assert messages == {"1": {"crs": ["HDW"], "sev": 1, "text": "Lifts out of order"}}
+
+
+def test_apply_pushport_ignores_station_messages_for_other_stations():
+    messages: dict = {}
+    d._apply_pushport(_station_message(crs=("KGX",)), {}, messages)
+    assert messages == {}
+
+
+def test_apply_pushport_removes_withdrawn_station_messages():
+    messages: dict = {}
+    d._apply_pushport(_station_message(), {}, messages)
+    d._apply_pushport(_station_message(crs=(), text=""), {}, messages)
+    assert messages == {}
+
+
 def test_prune_services_drops_old_services():
     services: dict = {}
     d._apply_pushport(_schedule(rid="OLD", origin="06:40", ptd="07:00", arrive="07:40"), services)

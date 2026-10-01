@@ -6,17 +6,20 @@ swiping left and right; the app returns to the Today tab after a few idle minute
 """
 
 import datetime
+import hashlib
 import json
 import logging
 import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import dash
 import dash_mantine_components as dmc
 import pandas as pd
+import requests
 from cachetools import TTLCache
 from dash import ALL, Input, Output, State, clientside_callback, dcc, html
 from dash import _callback as dash_callback
@@ -33,6 +36,19 @@ dash_callback.GLOBAL_CALLBACK_MAP.clear()
 dash_callback.GLOBAL_INLINE_SCRIPTS.clear()
 
 PORT = 8051
+HOME_STATION = "HDW"
+WALK_MINUTES = int(os.getenv("WALK_TO_STATION_MINUTES") or 10)
+# Darwin only gives station codes; names for where trains through Hadley Wood often end
+# up, beyond the stations dash_dashboard tracks
+DESTINATION_NAMES = {
+    **d.TIPLOC_TO_NAME,
+    "KNGX": "King's Cross",
+    "STEVNGE": "Stevenage",
+    "HRTFNTH": "Hertford North",
+    "HITCHIN": "Hitchin",
+    "CAMBDGE": "Cambridge",
+    "PBRO": "Peterborough",
+}
 
 TABS = [
     ("today", "Today", "tabler:home"),
@@ -80,6 +96,16 @@ WEATHER_CODES = {
 }
 
 _schedule_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+_tube_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+
+TFL_STATUS_URL = "https://api.tfl.gov.uk/Line/Mode/tube,elizabeth-line/Status"
+# TfL's line colours (Northern lightened so it shows on the dark background)
+TFL_LINE_COLOURS = {
+    "bakerloo": "#B36305", "central": "#E32017", "circle": "#FFD300", "district": "#00782A",
+    "elizabeth": "#6950A1", "hammersmith-city": "#F3A9BB", "jubilee": "#A0A5A9",
+    "metropolitan": "#9B0056", "northern": "#5c5c5c", "piccadilly": "#003688",
+    "victoria": "#0098D4", "waterloo-city": "#95CDBA",
+}
 
 _ingredients_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
 _day_events_cache: TTLCache = TTLCache(maxsize=4, ttl=300)
@@ -88,10 +114,39 @@ TIMELINE_COLOURS = ["#1c7ed6", "#0c8599", "#9c36b5", "#e8590c", "#4263eb", "#c22
 
 FRACTIONS = {0.25: "¼", 0.33: "⅓", 0.5: "½", 0.67: "⅔", 0.75: "¾"}
 
+SHOPPING_FILE = Path(__file__).resolve().parent.parent / ".shopping.json"
+_shopping_lock = threading.Lock()
+
 COOKED_FILE = Path(__file__).resolve().parent.parent / ".cooked.json"
 _cooked_lock = threading.Lock()
 
 # ── Data ──────────────────────────────────────────────────────────────────────
+
+
+def get_tube_status() -> list[dict]:
+    """Each Tube and Elizabeth line's status, worst first: {id, name, severity
+    (10 is good service), status, reason}."""
+    if "status" in _tube_cache:
+        return _tube_cache["status"]
+    resp = requests.get(TFL_STATUS_URL, timeout=15)
+    resp.raise_for_status()
+    lines = []
+    for line in resp.json():
+        statuses = line.get("lineStatuses", [])
+        descriptions = list(dict.fromkeys(st["statusSeverityDescription"] for st in statuses))
+        reason = next((st["reason"] for st in statuses if st.get("reason")), "")
+        lines.append(
+            {
+                "id": line["id"],
+                "name": line["name"],
+                "severity": min((st["statusSeverity"] for st in statuses), default=10),
+                "status": ", ".join(descriptions) or "Unknown",
+                "reason": re.sub(rf"^{re.escape(line['name'])}( Line)?:\s*", "", reason.strip(), flags=re.I),
+            }
+        )
+    lines.sort(key=lambda l: (l["severity"] >= 10, l["severity"], l["name"]))
+    _tube_cache["status"] = lines
+    return lines
 
 
 def get_schedule() -> tuple[str | None, dict[str, dict[str, str]]]:
@@ -170,52 +225,141 @@ def _format_amount(amount, unit) -> str:
     return f"{number} {unit}".strip()
 
 
-def get_recipe_ingredients() -> dict[str, list[tuple[str, str]]]:
-    """{recipe: [(ingredient, amount)]} from the ingredients sheet. The recipe name is
-    only filled in on each recipe's first row."""
+def get_recipe_ingredients() -> dict[str, list[dict]]:
+    """{recipe: [{name, amount (for display), qty, unit}]} from the ingredients sheet.
+    The recipe name is only filled in on each recipe's first row."""
     if "ingredients" in _ingredients_cache:
         return _ingredients_cache["ingredients"]
     df = pd.read_csv(d._sheet_url(d.RECIPE_SHEET_ID, gid=d.RECIPE_INGREDIENTS_GID))
-    recipes: dict[str, list[tuple[str, str]]] = {}
+    recipes: dict[str, list[dict]] = {}
     current = None
     for row in df.itertuples(index=False):
         name, _, display, amount, unit = row[:5]
         if pd.notna(name) and str(name).strip():
             current = str(name).strip()
         if current and pd.notna(display) and str(display).strip():
-            recipes.setdefault(current, []).append((str(display).strip(), _format_amount(amount, unit)))
+            qty = pd.to_numeric(amount, errors="coerce")
+            recipes.setdefault(current, []).append(
+                {
+                    "name": str(display).strip(),
+                    "amount": _format_amount(amount, unit),
+                    "qty": float(qty) if pd.notna(qty) and qty > 0 else None,
+                    "unit": str(unit).strip() if pd.notna(unit) else "",
+                }
+            )
     _ingredients_cache["ingredients"] = recipes
     return recipes
 
 
-def _read_cooked(menu: list[str]) -> set[str]:
+def get_shopping_list(menu: list[str]) -> list[dict]:
+    """Ingredients for all of `menu`, with amounts of the same thing in the same unit
+    added up: [{key, name, amount, recipes}], by name."""
+    totals: dict[tuple[str, str], dict] = {}
+    for recipe, items in get_recipe_ingredients().items():
+        if recipe not in menu:
+            continue
+        for item in items:
+            if item["name"].lower() == "water":
+                continue
+            entry = totals.setdefault((item["name"], item["unit"]), {"qty": 0.0, "recipes": set()})
+            entry["qty"] += item["qty"] or 0
+            entry["recipes"].add(recipe)
+    return [
+        {"key": f"{name}|{unit}", "name": name, "amount": _format_amount(t["qty"], unit), "recipes": len(t["recipes"])}
+        for (name, unit), t in sorted(totals.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1]))
+    ]
+
+
+def get_shopping() -> list[dict]:
+    """The shopping list: [{id, name, done}], in the order things were added."""
+    with _shopping_lock:
+        try:
+            return json.loads(SHOPPING_FILE.read_text()).get("items", [])
+        except (FileNotFoundError, ValueError):
+            return []
+
+
+def update_shopping(change) -> None:
+    """Apply `change` (a function that edits the list of items in place) and save."""
+    with _shopping_lock:
+        try:
+            items = json.loads(SHOPPING_FILE.read_text()).get("items", [])
+        except (FileNotFoundError, ValueError):
+            items = []
+        change(items)
+        tmp = SHOPPING_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"items": items}, indent=2))
+        tmp.replace(SHOPPING_FILE)
+
+
+def add_shopping_item(name: str) -> None:
+    """Add `name`, unless it's already on the list (then it's just unticked)."""
+    name = " ".join(name.split())
+    if not name:
+        return
+
+    def change(items):
+        for item in items:
+            if item["name"].lower() == name.lower():
+                item["done"] = False
+                return
+        # A short text id: big numbers lose precision in the browser and stop matching
+        items.append({"id": uuid.uuid4().hex[:12], "name": name, "done": False})
+
+    update_shopping(change)
+
+
+def tick_shopping_item(item_id: str, done: bool) -> None:
+    def change(items):
+        for item in items:
+            if item["id"] == item_id:
+                item["done"] = done
+
+    update_shopping(change)
+
+
+def remove_shopping_items(item_ids: set[str] | None = None) -> None:
+    """Remove the given items, or every ticked item when `item_ids` is None."""
+
+    def change(items):
+        items[:] = [i for i in items if not (i["done"] if item_ids is None else i["id"] in item_ids)]
+
+    update_shopping(change)
+
+
+def _read_ticks(menu: list[str]) -> dict[str, set[str]]:
     try:
         saved = json.loads(COOKED_FILE.read_text())
     except (FileNotFoundError, ValueError):
-        return set()
+        return {}
     if sorted(saved.get("menu", [])) != sorted(menu):
         COOKED_FILE.unlink(missing_ok=True)
-        return set()
-    return set(saved.get("cooked", [])) & set(menu)
+        return {}
+    return {kind: set(items) for kind, items in saved.items() if kind != "menu"}
 
 
-def get_cooked(menu: list[str]) -> set[str]:
-    """Recipes ticked off as cooked. Ticks belong to one weekly menu: as soon as the
-    menu changes at all the saved ticks are deleted, so they never come back even if
-    the same recipes return later."""
+def get_ticks(menu: list[str], kind: str) -> set[str]:
+    """Things ticked off this week, such as "cooked" recipes. Ticks belong
+    to one weekly menu: as soon as the menu changes at all the saved ticks are deleted,
+    so they never come back even if the same recipes return later."""
     with _cooked_lock:
-        return _read_cooked(menu)
+        return _read_ticks(menu).get(kind, set())
 
 
-def set_cooked(menu: list[str], recipe: str, done: bool) -> None:
-    """Tick or untick one recipe, keeping whatever else is already ticked."""
+def set_tick(menu: list[str], kind: str, item: str, done: bool) -> None:
+    """Tick or untick one item, keeping whatever else is already ticked."""
     with _cooked_lock:
-        cooked = _read_cooked(menu)
-        cooked = cooked | {recipe} if done else cooked - {recipe}
-        data = json.dumps({"menu": sorted(menu), "cooked": sorted(cooked & set(menu))}, indent=2)
+        ticks = _read_ticks(menu)
+        current = ticks.get(kind, set())
+        ticks[kind] = current | {item} if done else current - {item}
+        data = json.dumps({"menu": sorted(menu), **{k: sorted(v) for k, v in sorted(ticks.items())}}, indent=2)
         tmp = COOKED_FILE.with_suffix(".tmp")
         tmp.write_text(data)
         tmp.replace(COOKED_FILE)
+
+
+def get_cooked(menu: list[str]) -> set[str]:
+    return get_ticks(menu, "cooked") & set(menu)
 
 
 def _week_start_date(week_start: str | None) -> datetime.date | None:
@@ -244,46 +388,145 @@ def _weather_icon(code, is_day: bool, size: int) -> DashIconify:
     return DashIconify(icon=f"meteocons:{day_icon if is_day else night_icon}-fill", width=size)
 
 
+def get_journeys(depart_crs: str, dest_crs: str, now: datetime.datetime) -> list[dict]:
+    """Trains from `depart_crs` that later call at `dest_crs` (not only ones that end
+    there), soonest first, with the expected arrival time and journey length."""
+    depart_tpl = d.TIPLOC_FROM_CRS.get(depart_crs, depart_crs)
+    dest_tpl = d.TIPLOC_FROM_CRS.get(dest_crs, dest_crs)
+    journeys = []
+    with d._darwin_lock:
+        for svc in d._services.values():
+            call = svc["calls"].get(depart_tpl)
+            arr = svc.get("arrs", {}).get(dest_tpl)
+            if not call or not arr or arr["sta"] <= call["std"]:
+                continue
+            fc = svc["fc"].get(depart_tpl, {})
+            if fc.get("at"):
+                continue  # already departed
+            std = call["std"]
+            etd = d._nearest(std, fc["et"]) if fc.get("et") else std
+            if max(std, etd) < now - datetime.timedelta(minutes=1):
+                continue
+            if call["can"]:
+                status = "Cancelled"
+            elif fc.get("delayed"):
+                status = "Delayed"
+            elif etd > std:
+                status = etd.strftime("%H:%M")
+            else:
+                status = "On time"
+            arr_fc = svc["fc"].get(dest_tpl, {})
+            arr_time = arr_fc.get("arr_at") or arr_fc.get("arr_et")
+            eta = max(d._nearest(arr["sta"], arr_time) if arr_time else arr["sta"], etd)
+            journeys.append(
+                {
+                    "time": call["ptd"],
+                    "departs": etd,
+                    "status": status,
+                    "platform": fc.get("plat") or "—",
+                    "destination": DESTINATION_NAMES.get(svc["dest"], svc["dest"] or "—"),
+                    "arrives": eta,
+                    "minutes": round((eta - etd).total_seconds() / 60),
+                }
+            )
+    return sorted(journeys, key=lambda j: j["departs"])
+
+
+def get_station_messages(*crs: str) -> list[dict]:
+    """Current Darwin station messages for any of `crs`, most severe first."""
+    with d._darwin_lock:
+        messages = [m for m in d._station_messages.values() if set(m["crs"]) & set(crs)]
+    return sorted(messages, key=lambda m: -m["sev"])
+
+
 def _train_row(train: dict, now: datetime.datetime) -> html.Div:
     """Same colours as the main dashboard: red when cancelled or leaving within 10
     minutes, green from 10 to 20 minutes away."""
-    etd = train["ETD"]
-    leaves = d._nearest(now, etd if re.fullmatch(r"\d\d:\d\d", etd) else train["Time"])
-    minutes = round((leaves - now).total_seconds() / 60)
-    if etd == "Cancelled" or minutes <= 10:
+    status = train["status"]
+    minutes = round((train["departs"] - now).total_seconds() / 60)
+    if status == "Cancelled" or minutes <= 10:
         urgency = "red"
     elif minutes <= 20:
         urgency = "green"
     else:
         urgency = "none"
-    if etd == "On time":
+    if status == "On time":
         badge = dmc.Badge("On time", color="teal", variant="light", size="lg")
-    elif etd in ("Cancelled", "Delayed"):
-        badge = dmc.Badge(etd, color="red", variant="filled", size="lg")
+    elif status in ("Cancelled", "Delayed"):
+        badge = dmc.Badge(status, color="red", variant="filled", size="lg")
     else:
-        badge = dmc.Badge(f"Exp {etd}", color="orange", variant="light", size="lg")
-    when = "" if etd == "Cancelled" else "now" if minutes <= 0 else f"in {minutes} min"
+        badge = dmc.Badge(f"Exp {status}", color="orange", variant="light", size="lg")
+    when = "" if status == "Cancelled" else "now" if minutes <= 0 else f"in {minutes} min"
+    details = [f"Platform {train['platform']}"] + ([when] if when else [])
     return html.Div(
         className=f"train-row urgency-{urgency}",
         children=[
             html.Div(
                 [
-                    html.Div(train["Time"], className="train-time"),
-                    dmc.Text(train["Destination"], c="dimmed"),
+                    html.Div(
+                        [
+                            html.Span(train["time"], className="train-time"),
+                            html.Span(f"→ {train['arrives']:%H:%M}", className="train-arrives"),
+                        ]
+                    ),
+                    dmc.Text(f"{train['minutes']} min journey · to {train['destination']}", c="dimmed", size="sm"),
                 ]
             ),
             html.Div(
                 className="train-right",
-                children=[
-                    badge,
-                    dmc.Text(f"Platform {train['Platform']}  ·  {when}" if when else f"Platform {train['Platform']}", size="sm", c="dimmed"),
-                ],
+                children=[badge, dmc.Text("  ·  ".join(details), size="sm", c="dimmed")],
             ),
         ],
     )
 
 
-def _trains_block(depart: str, dest: str, limit: int):
+def _leave_by(journeys: list[dict], now: datetime.datetime):
+    """When to set off to walk to the station for the next train worth catching."""
+    for train in journeys:
+        if train["status"] == "Cancelled":
+            continue
+        leave = train["departs"] - datetime.timedelta(minutes=WALK_MINUTES)
+        minutes = (leave - now).total_seconds() / 60
+        if minutes < 0:
+            continue
+        headline = "Leave now" if minutes < 1 else f"Leave in {int(minutes)} min"
+        return html.Div(
+            className="leave-by",
+            children=[
+                DashIconify(icon="tabler:walk", width=34),
+                html.Div(
+                    [
+                        html.Div(headline, className="leave-by-headline"),
+                        dmc.Text(
+                            f"by {leave:%H:%M} for the {train['time']}, arriving {train['arrives']:%H:%M}",
+                            c="dimmed",
+                        ),
+                    ]
+                ),
+            ],
+        )
+    return None
+
+
+def _station_alerts(depart: str, dest: str, compact: bool = False):
+    messages = get_station_messages(depart, dest)
+    if compact:
+        messages = [m for m in messages if m["sev"] >= 1]
+    return [
+        dmc.Alert(
+            m["text"],
+            title=", ".join(d.CRS_CODES.get(c, c) for c in m["crs"]),
+            color="red" if m["sev"] >= 2 else "yellow" if m["sev"] == 1 else "blue",
+            variant="light",
+            radius="md",
+            mb="sm",
+            icon=DashIconify(icon="tabler:alert-triangle" if m["sev"] else "tabler:info-circle", width=22),
+        )
+        for m in messages
+    ]
+
+
+def _trains_block(depart: str, dest: str, limit: int, today: bool = False):
     missing = [k for k in d._DARWIN_REQUIRED_ENV if not os.environ.get(k)]
     if missing:
         return _alert(f"{', '.join(missing)} not set.")
@@ -292,18 +535,20 @@ def _trains_block(depart: str, dest: str, limit: int):
         if status["error"]:
             return _alert(f"Rail feed error: {status['error']}")
         return dmc.Group([dmc.Loader(size="sm"), dmc.Text("Loading live train data…", c="dimmed")])
-    _, departures = d.get_departures(depart, dest)
-    children = []
+    now = d._now_london()
+    journeys = get_journeys(depart, dest, now)
+    children = _station_alerts(depart, dest, compact=today)
     last = status["last_message"]
     as_of = last.strftime("%H:%M:%S") if last else "—"
     if not status["connected"]:
         children.append(_alert(f"Live feed reconnecting. Showing data as of {as_of}.", "yellow"))
     elif not last or datetime.datetime.now(d._LONDON) - last > datetime.timedelta(minutes=2):
         children.append(_alert(f"No live updates since {as_of}.", "yellow"))
-    if not departures:
+    if today and depart == HOME_STATION:
+        children.append(_leave_by(journeys, now))
+    if not journeys:
         children.append(dmc.Text("No direct trains right now.", c="dimmed"))
-    now = d._now_london()
-    children += [_train_row(t, now) for t in departures[:limit]]
+    children += [_train_row(t, now) for t in journeys[:limit]]
     return html.Div(children)
 
 
@@ -349,6 +594,59 @@ def _scroll_rail(target_id: str, horizontal: bool = False) -> html.Div:
     )
 
 
+TIMER_PRESETS = [1, 3, 5, 10, 15, 20, 25, 30, 45, 60]
+
+
+def _timer_modals() -> html.Div:
+    """The cooking timer's chooser and its "time's up" screen."""
+    big = {"size": "xl", "radius": "lg", "h": 72}
+    return html.Div(
+        [
+            dmc.Modal(
+                id="timer-modal",
+                title=dmc.Text("Cooking timer", fw=700, size="xl"),
+                centered=True,
+                size="lg",
+                radius="lg",
+                children=[
+                    html.Div(
+                        className="timer-presets",
+                        children=[
+                            dmc.Button(f"{m} min", id={"type": "timer-preset", "id": m}, variant="light", **big)
+                            for m in TIMER_PRESETS
+                        ],
+                    ),
+                    html.Div(
+                        id="timer-running-controls",
+                        className="timer-presets",
+                        children=[
+                            dmc.Button("+1 min", id={"type": "timer-add", "id": 1}, variant="default", **big),
+                            dmc.Button("+5 min", id={"type": "timer-add", "id": 5}, variant="default", **big),
+                            dmc.Button("Stop timer", id="timer-stop", color="red", **big),
+                        ],
+                    ),
+                ],
+            ),
+            dmc.Modal(
+                id="timer-done",
+                fullScreen=True,
+                withCloseButton=False,
+                closeOnClickOutside=False,
+                closeOnEscape=False,
+                className="timer-done",
+                children=html.Div(
+                    className="timer-done-body",
+                    children=[
+                        DashIconify(icon="tabler:alarm", width=140),
+                        html.Div("Time's up", className="timer-done-title"),
+                        dmc.Button("Stop", id="timer-dismiss", size="xl", radius="xl", color="red", w=280, h=96, fz=32),
+                    ],
+                ),
+            ),
+        ]
+    )
+
+
 def _panel(tab_id: str, *children) -> html.Section:
     return html.Section(list(children), id={"type": "panel", "id": tab_id}, className="panel")
 
@@ -367,7 +665,12 @@ def serve_layout():
             dcc.Interval(id="int-server", interval=10_000),
             dcc.Store(id="tab", data="today"),
             dcc.Store(id="calendar-store"),
+            dcc.Store(id="timer-end", storage_type="local"),
+            _timer_modals(),
             dcc.Store(id="cooked-saved"),
+            dcc.Store(id="shopping-version"),
+            dcc.Store(id="food-sig"),
+            dcc.Store(id="suggestions-sig"),
             dcc.Store(id="server-started-latest"),
             dcc.Store(id="server-started-seen"),
             html.Div(id="fc-dummy", hidden=True),
@@ -417,6 +720,7 @@ def serve_layout():
                                             ),
                                         ),
                                         _card(None, html.Div(id="trains-list")),
+                                        _card("Tube & Elizabeth line", html.Div(id="tube-status")),
                                     ),
                                     _panel(
                                         "calendar",
@@ -424,6 +728,40 @@ def serve_layout():
                                     ),
                                     _panel(
                                         "food",
+                                        _card(
+                                            None,
+                                            dmc.Group(
+                                                [DashIconify(icon="tabler:shopping-cart", width=26), dmc.Text("Shopping list", fw=700, size="xl")],
+                                                gap="sm",
+                                                mb="md",
+                                            ),
+                                            html.Div(
+                                                className="shop-add",
+                                                children=[
+                                                    dmc.TextInput(id="shop-input", placeholder="Add an item…", size="lg", radius="md"),
+                                                    dmc.Button("Add", id="shop-add", size="lg", radius="md", leftSection=DashIconify(icon="tabler:plus", width=22)),
+                                                ],
+                                            ),
+                                            html.Div(id="shopping-list"),
+                                            dmc.Group(
+                                                [
+                                                    dmc.Text(id="shop-count", c="dimmed"),
+                                                    dmc.Button(
+                                                        "Clear ticked",
+                                                        id="shop-clear",
+                                                        variant="light",
+                                                        color="gray",
+                                                        size="md",
+                                                        radius="md",
+                                                        disabled=True,
+                                                        leftSection=DashIconify(icon="tabler:trash", width=20),
+                                                    ),
+                                                ],
+                                                justify="space-between",
+                                                mt="sm",
+                                            ),
+                                            html.Div(id="shop-suggestions"),
+                                        ),
                                         html.Div(id="menu-content"),
                                         _card(
                                             "Recipe finder",
@@ -466,6 +804,13 @@ def serve_layout():
                                 **{"data-tab": tab_id},
                             )
                             for tab_id, label, icon in TABS
+                        ]
+                        + [
+                            html.Button(
+                                [DashIconify(icon="tabler:alarm", width=30), html.Span("Timer", id="timer-text")],
+                                id="timer-button",
+                                className="timer-button",
+                            )
                         ],
                     ),
                 ],
@@ -531,6 +876,61 @@ clientside_callback(
 )
 
 
+# ── Cooking timer (all in the browser; app.js does the beeping) ──
+
+clientside_callback(
+    """function(n, end) {
+        return [true, end && end > Date.now() ? {} : { display: "none" }];
+    }""",
+    Output("timer-modal", "opened"),
+    Output("timer-running-controls", "style"),
+    Input("timer-button", "n_clicks"),
+    State("timer-end", "data"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    """function(presets, adds, stop, end) {
+        const id = dash_clientside.callback_context.triggered_id;
+        if (!id) return dash_clientside.no_update;
+        if (id === "timer-stop") return [null, false];
+        if (id.type === "timer-preset") return [Date.now() + id.id * 60000, false];
+        const base = end && end > Date.now() ? end : Date.now();
+        return [base + id.id * 60000, false];
+    }""",
+    Output("timer-end", "data"),
+    Output("timer-modal", "opened", allow_duplicate=True),
+    Input({"type": "timer-preset", "id": ALL}, "n_clicks"),
+    Input({"type": "timer-add", "id": ALL}, "n_clicks"),
+    Input("timer-stop", "n_clicks"),
+    State("timer-end", "data"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    """function(n, end) {
+        const left = end ? Math.round((end - Date.now()) / 1000) : null;
+        const done = left !== null && left <= 0;
+        if (window.timerRing) window.timerRing(done);
+        if (left === null || done) return ["Timer", "timer-button", done];
+        const m = Math.floor(left / 60), sec = String(left % 60).padStart(2, "0");
+        return [`${m}:${sec}`, "timer-button running", false];
+    }""",
+    Output("timer-text", "children"),
+    Output("timer-button", "className"),
+    Output("timer-done", "opened"),
+    Input("int-clock", "n_intervals"),
+    Input("timer-end", "data"),
+)
+
+clientside_callback(
+    """function(n) { if (window.timerRing) window.timerRing(false); return null; }""",
+    Output("timer-end", "data", allow_duplicate=True),
+    Input("timer-dismiss", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+
 # Reload open pages when the app restarts, so they pick up the new version
 @app.callback(Output("server-started-latest", "data"), Input("int-server", "n_intervals"))
 def report_server_started(_):
@@ -560,7 +960,47 @@ clientside_callback(
 )
 def update_trains(_, depart, dest):
     title = _journey_title(depart, dest)
-    return title, _trains_block(depart, dest, 3), _trains_block(depart, dest, 10)
+    return title, _trains_block(depart, dest, 3, today=True), _trains_block(depart, dest, 10)
+
+
+@app.callback(Output("tube-status", "children"), Input("int-slow", "n_intervals"))
+def update_tube_status(_):
+    try:
+        lines = get_tube_status()
+    except Exception as ex:
+        return _alert(f"TfL status error: {ex}")
+    disrupted = [l for l in lines if l["severity"] < 10]
+    good = [l for l in lines if l["severity"] >= 10]
+    rows = [
+        html.Div(
+            className="tube-row",
+            children=[
+                html.Span(className="tube-swatch", style={"background": TFL_LINE_COLOURS.get(l["id"], "#888")}),
+                html.Div(
+                    [
+                        html.Div([html.Span(l["name"], className="tube-name"), html.Span(l["status"], className="tube-status-text")]),
+                        dmc.Text(l["reason"], size="sm", c="dimmed") if l["reason"] else None,
+                    ]
+                ),
+            ],
+        )
+        for l in disrupted
+    ]
+    if good:
+        rows.append(
+            html.Div(
+                className="tube-good",
+                children=[
+                    html.Div(
+                        [html.Span(className="tube-dot", style={"background": TFL_LINE_COLOURS.get(l["id"], "#888")}), l["name"]],
+                        className="tube-good-line",
+                    )
+                    for l in good
+                ],
+            )
+        )
+        rows.insert(len(disrupted), dmc.Text("Good service on all other lines" if disrupted else "Good service on all lines", c="teal", fw=500, mt="xs" if disrupted else 0))
+    return rows
 
 
 @app.callback(Output("today-weather", "children"), Input("int-weather", "n_intervals"))
@@ -766,7 +1206,7 @@ def update_schedule(day, _):
     return [caption, _card(None, *rows)]
 
 
-def _ingredients_section(items: list[tuple[str, str]] | None):
+def _ingredients_section(items: list[dict] | None):
     """A collapsed "Ingredients" row that opens to show the list."""
     if not items:
         return None
@@ -776,8 +1216,8 @@ def _ingredients_section(items: list[tuple[str, str]] | None):
                 dmc.AccordionControl(f"Ingredients ({len(items)})"),
                 dmc.AccordionPanel(
                     [
-                        html.Div([html.Span(name), html.Span(amount, className="ingredient-amount")], className="ingredient-row")
-                        for name, amount in items
+                        html.Div([html.Span(i["name"]), html.Span(i["amount"], className="ingredient-amount")], className="ingredient-row")
+                        for i in items
                     ]
                 ),
             ],
@@ -789,16 +1229,22 @@ def _ingredients_section(items: list[tuple[str, str]] | None):
     )
 
 
+def _signature(*data) -> str:
+    return hashlib.md5(json.dumps(data, default=str, sort_keys=True).encode()).hexdigest()
+
+
 @app.callback(
     Output("menu-content", "children"),
     Output("today-menu", "children"),
+    Output("food-sig", "data"),
     Input("int-slow", "n_intervals"),
+    State("food-sig", "data"),
 )
-def update_menu(_):
+def update_menu(_, previous):
     try:
         menu = d.get_weekly_menu()
     except Exception as ex:
-        return _card("This week's menu", _alert(f"Menu error: {ex}")), _alert(f"Menu error: {ex}")
+        return _card("This week's menu", _alert(f"Menu error: {ex}")), _alert(f"Menu error: {ex}"), None
     label_col = menu.columns[0]
     details = menu.set_index(label_col)
     cooked = get_cooked(list(details.columns))
@@ -806,6 +1252,10 @@ def update_menu(_):
         ingredients = get_recipe_ingredients()
     except Exception:
         ingredients = {}
+    # Rebuilding closes any open ingredients list, so only do it when something changed
+    signature = _signature(menu.to_json(), ingredients, sorted(cooked))
+    if signature == previous:
+        return dash.no_update, dash.no_update, dash.no_update
     cards, summary = [], []
     for recipe in details.columns:
         info = {k: v for k, v in details[recipe].items() if pd.notna(v) and str(v).strip()}
@@ -863,7 +1313,7 @@ def update_menu(_):
                 mb="sm",
             )
         )
-    return [dmc.Text("This week's menu", fw=600, c="dimmed", size="sm", tt="uppercase", mb="sm"), *cards], summary
+    return [dmc.Text("This week's menu", fw=600, c="dimmed", size="sm", tt="uppercase", mb="sm"), *cards], summary, signature
 
 
 @app.callback(
@@ -878,8 +1328,126 @@ def update_cooked(checked):
     if not tapped:
         return dash.no_update
     ids = [i["id"]["id"] for i in dash.callback_context.inputs_list[0]]
-    set_cooked(ids, tapped["id"], bool(checked[ids.index(tapped["id"])]))
+    set_tick(ids, "cooked", tapped["id"], bool(checked[ids.index(tapped["id"])]))
     return time.time()
+
+
+@app.callback(
+    Output("shopping-version", "data"),
+    Output("shop-input", "value"),
+    Input("shop-add", "n_clicks"),
+    Input("shop-input", "n_submit"),
+    Input({"type": "shop-suggest", "id": ALL}, "n_clicks"),
+    Input({"type": "shop-item", "id": ALL}, "checked"),
+    Input({"type": "shop-remove", "id": ALL}, "n_clicks"),
+    Input("shop-clear", "n_clicks"),
+    State("shop-input", "value"),
+    prevent_initial_call=True,
+)
+def change_shopping(_add, _submit, _suggest, checked, _remove, _clear, text):
+    tapped = dash.callback_context.triggered_id
+    # Redrawing the list also fires this (with no trigger, or buttons with no clicks
+    # yet); only act on what was actually tapped
+    is_tick = isinstance(tapped, dict) and tapped["type"] == "shop-item"
+    if not tapped or not (is_tick or dash.callback_context.triggered[0]["value"]):
+        return dash.no_update, dash.no_update
+    if tapped in ("shop-add", "shop-input"):
+        add_shopping_item(text or "")
+        return time.time(), ""
+    if tapped == "shop-clear":
+        remove_shopping_items()
+    elif tapped["type"] == "shop-suggest":
+        add_shopping_item(tapped["id"])
+    elif tapped["type"] == "shop-remove":
+        remove_shopping_items({tapped["id"]})
+    elif tapped["type"] == "shop-item":
+        ids = [i["id"]["id"] for i in dash.callback_context.inputs_list[3]]
+        tick_shopping_item(tapped["id"], bool(checked[ids.index(tapped["id"])]))
+    return time.time(), dash.no_update
+
+
+@app.callback(
+    Output("shopping-list", "children"),
+    Output("shop-count", "children"),
+    Output("shop-clear", "disabled"),
+    Input("shopping-version", "data"),
+    Input("int-slow", "n_intervals"),
+)
+def show_shopping(_, __):
+    items = get_shopping()
+    if not items:
+        return dmc.Text("Nothing on the list yet.", c="dimmed", my="md"), "", True
+    to_buy = [i for i in items if not i["done"]]
+    bought = [i for i in items if i["done"]]
+    rows = [
+        html.Div(
+            className="shop-row",
+            children=[
+                dmc.Checkbox(
+                    id={"type": "shop-item", "id": item["id"]},
+                    checked=item["done"],
+                    label=item["name"],
+                    size="xl",
+                    radius="md",
+                    color="green",
+                    className="shop-check",
+                ),
+                dmc.ActionIcon(
+                    DashIconify(icon="tabler:x", width=24),
+                    id={"type": "shop-remove", "id": item["id"]},
+                    size=48,
+                    variant="subtle",
+                    color="gray",
+                    radius="xl",
+                ),
+            ],
+        )
+        for item in to_buy + bought
+    ]
+    count = f"{len(to_buy)} to buy" + (f" · {len(bought)} ticked" if bought else "")
+    return html.Div(rows, className="shop-list"), count, not bought
+
+
+@app.callback(
+    Output("shop-suggestions", "children"),
+    Output("suggestions-sig", "data"),
+    Input("int-slow", "n_intervals"),
+    State("suggestions-sig", "data"),
+)
+def show_suggestions(_, previous):
+    """This week's ingredients as buttons, for adding to the list without a keyboard.
+    Only rebuilt when the ingredients change, so the section stays open while in use."""
+    try:
+        items = get_shopping_list(list(d.get_weekly_menu().columns[1:]))
+    except Exception:
+        return None, None
+    names = sorted({i["name"] for i in items}, key=str.lower)
+    signature = _signature(names)
+    if signature == previous:
+        return dash.no_update, dash.no_update
+    return (
+        dmc.Accordion(
+            dmc.AccordionItem(
+                [
+                    dmc.AccordionControl("Add from this week's recipes"),
+                    dmc.AccordionPanel(
+                        html.Div(
+                            [
+                                dmc.Button(name, id={"type": "shop-suggest", "id": name}, variant="light", size="md", radius="xl")
+                                for name in names
+                            ],
+                            className="shop-suggest-list",
+                        )
+                    ),
+                ],
+                value="suggestions",
+            ),
+            chevronSize=28,
+            className="shop-suggestions",
+            mt="md",
+        ),
+        signature,
+    )
 
 
 @app.callback(Output("ingredient", "data"), Input("int-slow", "n_intervals"))
@@ -889,7 +1457,7 @@ def update_ingredient_options(_):
         recipes = get_recipe_ingredients()
     except Exception:
         return []
-    return sorted({name for recipe, items in recipes.items() if recipe in on_menu for name, _ in items})
+    return sorted({i["name"] for recipe, items in recipes.items() if recipe in on_menu for i in items})
 
 
 @app.callback(
@@ -906,10 +1474,10 @@ def update_recipes(ingredient, _):
     except Exception as ex:
         return _alert(f"Recipe error: {ex}")
     matches = [
-        (recipe, amount)
+        (recipe, i["amount"])
         for recipe, items in recipes.items()
-        for name, amount in items
-        if name == ingredient
+        for i in items
+        if i["name"] == ingredient
     ]
     if not matches:
         return dmc.Text(f"No recipes use {ingredient}.", c="dimmed")

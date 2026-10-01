@@ -74,6 +74,7 @@ _DARWIN_SFTP_PORT = 2222
 _DARWIN_SFTP_USER = "sftpuser"
 _DARWIN_STOMP_PORT = 61613
 _DARWIN_PP_NS5 = "http://www.thalesgroup.com/rtti/PushPort/Forecasts/v3"
+_DARWIN_PP_NS7 = "http://www.thalesgroup.com/rtti/PushPort/StationMessages/v1"
 _DARWIN_TOPIC = "/topic/darwin.pushport-v16"
 _DARWIN_SNAPSHOT = "snapshot/snapshot.gz"
 _DARWIN_REQUIRED_ENV = ("DARWIN_SFTP_PASS", "DARWIN_STOMP_USER", "DARWIN_STOMP_PASS")
@@ -94,8 +95,11 @@ _calendar_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
 log = logging.getLogger("darwin")
 
 # rid -> {"dest": tiploc, "calls": {tiploc: {"ptd", "std", "can"}},
-#         "fc": {tiploc: {"et", "at", "delayed", "plat"}}}
+#         "arrs": {tiploc: {"pta", "sta"}},
+#         "fc": {tiploc: {"et", "at", "delayed", "plat", "arr_et", "arr_at"}}}
 _services: dict[str, dict] = {}
+# message id -> {"crs": [crs, ...], "sev": int, "text": str}, for tracked stations only
+_station_messages: dict[str, dict] = {}
 _darwin_lock = threading.Lock()
 _darwin_status: dict = {
     "ready": False,
@@ -230,7 +234,7 @@ def _apply_schedule(msg: ET.Element, services: dict) -> None:
     if msg.get("deleted") == "true":
         services.pop(rid, None)
         return
-    ref, dest, calls = None, None, {}
+    ref, dest, calls, arrs = None, None, {}, {}
     for loc in msg:
         working = loc.get("wtd") or loc.get("wta") or loc.get("wtp")
         if not working:
@@ -249,32 +253,55 @@ def _apply_schedule(msg: ET.Element, services: dict) -> None:
                 "std": _nearest(ref, loc.get("ptd")),
                 "can": loc.get("can") == "true",
             }
+        if tpl in _TRACKED_TIPLOCS and tag in ("IP", "DT") and loc.get("pta"):
+            arrs[tpl] = {"pta": loc.get("pta"), "sta": _nearest(ref, loc.get("pta"))}
     if not calls:
         services.pop(rid, None)
         return
-    services.setdefault(rid, {"fc": {}}).update(dest=dest, calls=calls)
+    services.setdefault(rid, {"fc": {}}).update(dest=dest, calls=calls, arrs=arrs)
 
 
 def _apply_ts(msg: ET.Element, services: dict) -> None:
     for loc in msg.findall(f"{{{_DARWIN_PP_NS5}}}Location"):
-        if loc.get("tpl") not in _TRACKED_TIPLOCS or not loc.get("wtd"):
+        if loc.get("tpl") not in _TRACKED_TIPLOCS or not (loc.get("wtd") or loc.get("wta")):
             continue
         svc = services.setdefault(msg.get("rid"), {"dest": None, "calls": {}, "fc": {}})
         fc = svc["fc"].setdefault(loc.get("tpl"), {})
-        dep = loc.find(f"{{{_DARWIN_PP_NS5}}}dep")
-        if dep is not None:
-            fc["et"] = dep.get("et")
-            fc["at"] = None if dep.get("atRemoved") == "true" else dep.get("at")
-            fc["delayed"] = "true" in (dep.get("delayed"), dep.get("etUnknown"))
-        plat = loc.find(f"{{{_DARWIN_PP_NS5}}}plat")
-        if plat is not None:
-            suppressed = "true" in (plat.get("platsup"), plat.get("cisPlatsup"))
-            fc["plat"] = None if suppressed else plat.text
+        if loc.get("wtd"):
+            dep = loc.find(f"{{{_DARWIN_PP_NS5}}}dep")
+            if dep is not None:
+                fc["et"] = dep.get("et")
+                fc["at"] = None if dep.get("atRemoved") == "true" else dep.get("at")
+                fc["delayed"] = "true" in (dep.get("delayed"), dep.get("etUnknown"))
+            plat = loc.find(f"{{{_DARWIN_PP_NS5}}}plat")
+            if plat is not None:
+                suppressed = "true" in (plat.get("platsup"), plat.get("cisPlatsup"))
+                fc["plat"] = None if suppressed else plat.text
+        arr = loc.find(f"{{{_DARWIN_PP_NS5}}}arr")
+        if arr is not None:
+            fc["arr_et"] = arr.get("et")
+            fc["arr_at"] = None if arr.get("atRemoved") == "true" else arr.get("at")
 
 
-def _apply_pushport(xml: bytes, services: dict) -> None:
-    """Fold one Push Port document into `services`."""
-    if not _TRACKED_TPL_RE.search(xml) and b"<deactivated" not in xml:
+def _apply_station_message(msg: ET.Element, messages: dict) -> None:
+    """Keep station messages (disruption notices etc.) for tracked stations. A message
+    sent again without stations or text has been withdrawn."""
+    stations = sorted(
+        s.get("crs") for s in msg.findall(f"{{{_DARWIN_PP_NS7}}}Station") if s.get("crs") in CRS_CODES
+    )
+    body = msg.find(f"{{{_DARWIN_PP_NS7}}}Msg")
+    text = " ".join("".join(body.itertext()).split()) if body is not None else ""
+    if stations and text and msg.get("suppress") != "true":
+        messages[msg.get("id")] = {"crs": stations, "sev": int(msg.get("sev") or 0), "text": text}
+    else:
+        messages.pop(msg.get("id"), None)
+
+
+def _apply_pushport(xml: bytes, services: dict, messages: dict | None = None) -> None:
+    """Fold one Push Port document into `services` (and station messages into
+    `messages`, by default the module's _station_messages)."""
+    messages = _station_messages if messages is None else messages
+    if not _TRACKED_TPL_RE.search(xml) and b"<deactivated" not in xml and b"<OW " not in xml:
         return
     try:
         root = ET.fromstring(xml)
@@ -289,6 +316,8 @@ def _apply_pushport(xml: bytes, services: dict) -> None:
                 _apply_ts(msg, services)
             elif tag == "deactivated":
                 services.pop(msg.get("rid"), None)
+            elif tag == "OW":
+                _apply_station_message(msg, messages)
 
 
 def _prune_services(services: dict, now: datetime.datetime) -> None:
@@ -328,6 +357,7 @@ def _read_gz_lines(sftp: paramiko.SFTPClient, path: str) -> list[bytes]:
 def _load_darwin_state() -> dict:
     """Build state from the snapshot and the pushport logs written after it."""
     services: dict = {}
+    _station_messages.clear()  # the snapshot has every current message
     with _darwin_sftp() as sftp:
         snapshot_mtime = sftp.stat(_DARWIN_SNAPSHOT).st_mtime
         logs = sorted(

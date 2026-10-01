@@ -8,6 +8,7 @@ nohup_dash.out
 nohup_app.out
 .dash_app.pid
 .cooked.json
+.shopping.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

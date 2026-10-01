@@ -34,6 +34,27 @@ html, body {
 .clock-time { font-size: 3rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .clock-date { font-size: 1.2rem; color: var(--mantine-color-dimmed); }
 
+/* ── Cooking timer ──────────────────────────────────────────────────────────── */
+
+/* The timer sits in the bottom bar beside the tabs, turning orange with the
+   time left while it runs */
+.app-nav .timer-button.running { color: white; background: var(--mantine-color-orange-8); }
+.app-nav .timer-button.running span { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.timer-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+.timer-done .mantine-Modal-content { background: var(--mantine-color-red-9); }
+.timer-done-body {
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  color: white;
+  animation: timer-pulse 1s ease-in-out infinite alternate;
+}
+.timer-done-title { font-size: 4rem; font-weight: 800; }
+@keyframes timer-pulse { from { opacity: 1; } to { opacity: 0.6; } }
+
 /* ── Content ────────────────────────────────────────────────────────────────── */
 
 .app-body {
@@ -123,6 +144,19 @@ html, body {
 .train-row.urgency-green .train-time { color: var(--mantine-color-green-5); }
 .train-time { font-size: 1.9rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .train-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.train-arrives { margin-left: 10px; font-size: 1.2rem; color: var(--mantine-color-dimmed); font-variant-numeric: tabular-nums; }
+
+.leave-by {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  margin-bottom: 6px;
+  border-radius: var(--mantine-radius-md);
+  background: var(--mantine-color-dark-6);
+}
+.leave-by svg { flex: none; color: var(--mantine-color-blue-4); }
+.leave-by-headline { font-size: 1.5rem; font-weight: 700; }
 
 /* ── Schedule ────────────────────────────────────────────────────── */
 
@@ -135,6 +169,21 @@ html, body {
 }
 .schedule-row:last-of-type { border-bottom: 0; }
 .schedule-row { flex-direction: column; gap: 2px; }
+
+/* ── Tube status ────────────────────────────────────────────────────────────── */
+
+.tube-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+}
+.tube-swatch { flex: none; width: 8px; border-radius: 4px; }
+.tube-name { font-weight: 700; font-size: 1.1rem; margin-right: 10px; }
+.tube-status-text { color: var(--mantine-color-orange-4); font-weight: 600; }
+.tube-good { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }
+.tube-good-line { display: flex; align-items: center; gap: 6px; color: var(--mantine-color-dimmed); }
+.tube-dot { width: 12px; height: 12px; border-radius: 50%; }
 
 /* ── Day timelines (Today and Tomorrow) ─────────────────────────────────────── */
 
@@ -277,6 +326,30 @@ html, body {
 .finder-row > div { flex: 1; min-width: 0; }
 .finder-row > .mantine-Badge-root { flex: none; }
 
+/* ── Shopping list (Food tab) ───────────────────────────────────────────────── */
+
+.shop-add { display: flex; gap: 10px; margin-bottom: 8px; }
+.shop-add > .mantine-TextInput-root { flex: 1; min-width: 0; }
+.shop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+}
+.shop-row:last-child { border-bottom: 0; }
+.shop-check { flex: 1; min-width: 0; }
+.shop-check .mantine-Checkbox-label { font-size: 1.15rem; padding-left: 14px; }
+.shop-row:has(input:checked) .mantine-Checkbox-label {
+  text-decoration: line-through;
+  color: var(--mantine-color-dimmed);
+}
+.shop-suggestions { border-top: 1px solid var(--mantine-color-dark-4); }
+.shop-suggestions .mantine-Accordion-item { border-bottom: 0; }
+.shop-suggestions .mantine-Accordion-control { padding: 6px 0; min-height: 56px; }
+.shop-suggestions .mantine-Accordion-label { font-size: 1.05rem; font-weight: 500; color: var(--mantine-color-blue-4); }
+.shop-suggest-list { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* ── Scroll rails ───────────────────────────────────────────────────────────── */
 
 .scroll-rail {
@@ -351,7 +424,7 @@ html, body {
 .app-nav {
   flex: none;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   background: var(--mantine-color-dark-7);
   border-top: 1px solid var(--mantine-color-dark-4);
   padding-bottom: env(safe-area-inset-bottom);
@@ -410,3 +483,8 @@ html, body {
 .fc .fc-list-event td { padding-top: 12px; padding-bottom: 12px; }
 .fc .fc-list-empty { background-color: transparent; color: var(--mantine-color-dimmed); }
 .fc a { color: inherit; text-decoration: none; }
+
+/* ── Night: dimmed between 22:30 and 06:30 (app.js) ─────────────────────────── */
+
+body .app { transition: filter 1.5s; }
+body.night .app { filter: brightness(0.3); }

@@ -63,6 +63,15 @@ The dashboard listens on all interfaces, so open `http://<your-server-ip>:8050` 
 ```
 Its styles and touch handling live in `scripts/app_assets/`. To scale everything up or down for a different screen, change the `font-size` at the top of `app.css`.
 
+What it adds over the original:
+- **Trains**: any train that stops at the destination (not just ones that end there), with arrival time and journey length; Darwin station messages for the chosen stations; Tube and Elizabeth line status from TfL; on Today, a "leave in N min" countdown for trains from Hadley Wood (set the walk in `WALK_TO_STATION_MINUTES`, default 10)
+- **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes
+- **Food**: a shared shopping list you add to (type an item, or tap one of this week's ingredients) and tick off, recipe cards with their ingredients, and the recipe finder
+- **Cooking timer** from the Timer button in the bottom bar, which beeps until stopped
+- **Night**: the screen dims from 22:30 to 06:30; a tap wakes it for two minutes
+
+Cooked ticks are saved in `.cooked.json` and cleared as soon as the weekly menu changes. The shopping list is saved in `.shopping.json` and kept until items are removed.
+
 ## Running as a background service
 
 Create `/etc/systemd/system/dashboard.service`:

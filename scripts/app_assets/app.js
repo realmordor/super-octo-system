@@ -239,6 +239,68 @@
   new MutationObserver(addDropdownRails).observe(document.body, { childList: true, subtree: true });
   setInterval(updateAllRails, 400);  // content and tabs change without scroll events
 
+  // ── Cooking timer alarm ─────────────────────────────────────────────────────
+  // The page has been tapped to start the timer, so the browser allows sound.
+
+  let audio = null;
+  let ringTimer = null;
+  function beep() {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25, 0.5].forEach((offset) => {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.4, audio.currentTime + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + offset + 0.2);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(audio.currentTime + offset);
+      osc.stop(audio.currentTime + offset + 0.2);
+    });
+  }
+  window.timerRing = function (on) {
+    if (on && !ringTimer) {
+      wake();
+      beep();
+      ringTimer = setInterval(beep, 1500);
+    } else if (!on && ringTimer) {
+      clearInterval(ringTimer);
+      ringTimer = null;
+    }
+  };
+
+  // ── Night: dim the screen ───────────────────────────────────────────────────
+  // From 22:30 to 06:30 the screen dims after a couple of minutes untouched; a tap
+  // wakes it (and that tap doesn't also press whatever was under it).
+
+  const NIGHT_FROM = 22 * 60 + 30;
+  const NIGHT_TO = 6 * 60 + 30;
+  const WAKE_MS = 2 * 60 * 1000;
+  let awakeUntil = 0;
+
+  function isNight() {
+    const now = new Date();
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    return minutes >= NIGHT_FROM || minutes < NIGHT_TO;
+  }
+  function updateNight() {
+    document.body.classList.toggle("night", isNight() && Date.now() > awakeUntil);
+  }
+  function wake() {
+    awakeUntil = Date.now() + WAKE_MS;
+    updateNight();
+  }
+  document.addEventListener("pointerdown", (e) => {
+    if (document.body.classList.contains("night")) {
+      e.preventDefault();
+      e.stopPropagation();
+      suppressClick = true;
+      setTimeout(() => { suppressClick = false; }, 400);
+    }
+    wake();
+  }, true);
+  setInterval(updateNight, 10 * 1000);
+  wake();  // start bright, even at night, and dim only after a while untouched
+
   // ── Idle: back to Today ─────────────────────────────────────────────────────
 
   let idleTimer = null;
