@@ -5,6 +5,9 @@ nohup.out
 nohup_dash.out
 .dashboard.pid
 .dash_dashboard.pid
+nohup_app.out
+.dash_app.pid
+.cooked.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

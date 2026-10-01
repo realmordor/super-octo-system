@@ -55,6 +55,14 @@ Or start it in the background (logs go to `nohup_dash.out`):
 
 The dashboard listens on all interfaces, so open `http://<your-server-ip>:8050` in any browser on the network (e.g. for a wall-mounted display).
 
+### Phone-style version (portrait touch screens)
+
+`scripts/dash_app.py` shows the same data as full-screen tabs (Today, Trains, Calendar, Food, Schedule) with a bottom navigation bar, built with [Dash Mantine Components](https://www.dash-mantine-components.com/). Swipe left or right to change tab; after 3 minutes without a touch it goes back to Today. It runs alongside the original on port 8051:
+```bash
+./scripts/start_dash_app.sh    # logs go to nohup_app.out
+```
+Its styles and touch handling live in `scripts/app_assets/`. To scale everything up or down for a different screen, change the `font-size` at the top of `app.css`.
+
 ## Running as a background service
 
 Create `/etc/systemd/system/dashboard.service`:

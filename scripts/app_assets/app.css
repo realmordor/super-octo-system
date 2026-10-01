@@ -1,0 +1,412 @@
+/* Phone-style layout for scripts/dash_app.py on a portrait touch screen.
+   Raise the font-size below to scale the whole app up for a bigger screen. */
+html { font-size: 112.5%; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  background: var(--mantine-color-dark-8);
+}
+
+/* Hide scrollbars everywhere; swiping still scrolls */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+
+.app-header {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: calc(env(safe-area-inset-top) + 16px) 20px 8px;
+}
+.clock-time { font-size: 3rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.clock-date { font-size: 1.2rem; color: var(--mantine-color-dimmed); }
+
+/* ── Content ────────────────────────────────────────────────────────────────── */
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 16px 24px;
+}
+
+.panel { display: none; }
+.panel.active { display: block; animation: panel-in 0.18s ease-out; }
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.card-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+  margin-bottom: var(--mantine-spacing-sm);
+}
+.mt-md { margin-top: var(--mantine-spacing-md); }
+
+/* Horizontal strips scroll sideways (no snapping: it fights drag-to-scroll) */
+.h-scroll {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  margin: 0 calc(-1 * var(--mantine-spacing-lg));
+  padding: 0 var(--mantine-spacing-lg);
+  overscroll-behavior-x: contain;
+}
+.h-scroll > * { flex: none; }
+
+/* ── Weather ────────────────────────────────────────────────────────────────── */
+
+.weather-now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: var(--mantine-spacing-md);
+}
+.weather-temp { font-size: 3.2rem; font-weight: 700; line-height: 1; }
+.weather-details { margin-left: auto; text-align: right; }
+
+.hour-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 72px;
+  padding: 10px 0;
+  border-radius: var(--mantine-radius-md);
+  background: var(--mantine-color-dark-6);
+}
+
+/* ── Trains ─────────────────────────────────────────────────────────────────── */
+
+.journey-picker {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.journey-picker > .mantine-Select-root { flex: 1; min-width: 0; }
+
+.train-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 12px 14px;
+  border-left: 4px solid transparent;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+}
+.train-row:last-child { border-bottom: 0; }
+.train-row.urgency-red { border-left-color: var(--mantine-color-red-6); }
+.train-row.urgency-red .train-time { color: var(--mantine-color-red-5); }
+.train-row.urgency-green { border-left-color: var(--mantine-color-green-6); }
+.train-row.urgency-green .train-time { color: var(--mantine-color-green-5); }
+.train-time { font-size: 1.9rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.train-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+/* ── Schedule ────────────────────────────────────────────────────── */
+
+.schedule-row {
+  display: flex;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+  font-size: 1.1rem;
+}
+.schedule-row:last-of-type { border-bottom: 0; }
+.schedule-row { flex-direction: column; gap: 2px; }
+
+/* ── Day timelines (Today and Tomorrow) ─────────────────────────────────────── */
+
+.tl-alldays { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.tl-allday {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: var(--mantine-color-blue-8);
+  color: white;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.tl-allday-tag {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* Side margins leave room for the first and last hour labels, centred on their lines */
+.tl-axis { position: relative; height: 24px; margin: 0 26px 4px; }
+.tl-hour {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 0.85rem;
+  color: var(--mantine-color-dimmed);
+  font-variant-numeric: tabular-nums;
+}
+.tl-rows { position: relative; margin: 0 26px; padding: 2px 0; }
+.tl-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--mantine-color-dark-4);
+}
+.tl-row { position: relative; height: 44px; margin: 6px 0; }
+.tl-row.past { opacity: 0.4; }
+.tl-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 8px;
+}
+.tl-label {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  white-space: nowrap;
+  font-size: 1.05rem;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.tl-label-outside { padding-right: 8px; }
+.tl-time { font-weight: 700; font-variant-numeric: tabular-nums; }
+.tl-now {
+  position: absolute;
+  top: -6px;
+  bottom: -2px;
+  border-left: 2px solid var(--mantine-color-red-6);
+  z-index: 1;
+}
+.tl-now::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--mantine-color-red-6);
+}
+
+/* ── Today's menu summary ───────────────────────────────────────────────────── */
+
+.menu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+  font-size: 1.1rem;
+}
+.menu-row:last-child { border-bottom: 0; }
+.menu-row-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mantine-color-dimmed);
+  font-variant-numeric: tabular-nums;
+}
+.menu-row-meta > svg { color: var(--mantine-color-green-5); }
+.menu-row-meta a { white-space: nowrap; }
+.menu-check { flex: 1; min-width: 0; }
+.menu-check .mantine-Checkbox-body { align-items: center; }
+.menu-check .mantine-Checkbox-label { font-size: 1.1rem; padding-left: 14px; }
+.menu-check .mantine-Checkbox-description { font-size: 0.95rem; padding-left: 14px; }
+.menu-row:has(input:checked) .mantine-Checkbox-label {
+  text-decoration: line-through;
+  color: var(--mantine-color-dimmed);
+}
+
+/* ── Ingredients (Food tab) ─────────────────────────────────────────────────── */
+
+.ingredients { border-top: 1px solid var(--mantine-color-dark-4); }
+.ingredients .mantine-Accordion-item { border-bottom: 0; }
+.ingredients .mantine-Accordion-control { padding: 6px 0; min-height: 56px; }
+.ingredients .mantine-Accordion-label { font-size: 1.05rem; font-weight: 500; color: var(--mantine-color-blue-4); }
+.ingredients .mantine-Accordion-content { padding: 0 0 4px; }
+.ingredient-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--mantine-color-dark-5);
+  font-size: 1.05rem;
+}
+.ingredient-row:last-child { border-bottom: 0; }
+.ingredient-amount { flex: none; color: var(--mantine-color-dimmed); font-variant-numeric: tabular-nums; }
+
+.finder-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+}
+.finder-row:last-child { border-bottom: 0; }
+.finder-row > div { flex: 1; min-width: 0; }
+.finder-row > .mantine-Badge-root { flex: none; }
+
+/* ── Scroll rails ───────────────────────────────────────────────────────────── */
+
+.scroll-rail {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 76px;
+  padding: 8px 12px 12px 0;
+  touch-action: none;
+}
+.scroll-rail.idle { display: none; }
+
+.rail-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 88px;
+  border: 0;
+  border-radius: var(--mantine-radius-lg);
+  background: var(--mantine-color-dark-5);
+  color: var(--mantine-color-gray-2);
+  cursor: pointer;
+}
+.rail-btn:active { background: var(--mantine-color-blue-8); }
+.rail-btn.disabled { opacity: 0.3; }
+
+.rail-track {
+  position: relative;
+  flex: 1;
+  width: 28px;
+  min-height: 80px;
+  border-radius: 14px;
+  background: var(--mantine-color-dark-6);
+  cursor: pointer;
+}
+.rail-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  border-radius: 14px;
+  background: var(--mantine-color-dark-2);
+}
+.rail-track:active .rail-thumb { background: var(--mantine-color-blue-5); }
+
+/* Sideways rail under the weather strip */
+.scroll-rail.rail-x {
+  flex-direction: row;
+  width: auto;
+  padding: 12px 0 0;
+}
+.rail-x .rail-btn { width: 88px; height: 56px; }
+.rail-x .rail-track { width: auto; height: 28px; min-height: 0; flex: 1; }
+.rail-x .rail-thumb { height: 100%; width: auto; }
+
+/* Dropdowns: options on the left, a smaller rail on the right */
+.mantine-Select-dropdown.has-rail { display: flex; gap: 8px; }
+.mantine-Select-dropdown.has-rail > :not(.scroll-rail) { flex: 1; min-width: 0; }
+.dropdown-rail { width: 60px; padding: 0; }
+.dropdown-rail .rail-btn { width: 56px; height: 64px; }
+.dropdown-rail .rail-track { width: 24px; min-height: 40px; background: var(--mantine-color-dark-5); }
+.dropdown-rail .rail-btn { background: var(--mantine-color-dark-4); }
+.mantine-ScrollArea-scrollbar { display: none; }
+.mantine-Select-option { padding-top: 14px; padding-bottom: 14px; font-size: 1.1rem; }
+
+/* ── Bottom navigation ──────────────────────────────────────────────────────── */
+
+.app-nav {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  background: var(--mantine-color-dark-7);
+  border-top: 1px solid var(--mantine-color-dark-4);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.app-nav button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-height: 76px;
+  padding: 12px 0;
+  border: 0;
+  background: none;
+  color: var(--mantine-color-dark-2);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.app-nav button.active { color: var(--mantine-color-blue-4); }
+.app-nav button:active { background: var(--mantine-color-dark-6); }
+
+/* ── FullCalendar dark theme ────────────────────────────────────────────────── */
+
+.fc {
+  --fc-border-color: var(--mantine-color-dark-4);
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: var(--mantine-color-dark-6);
+  --fc-list-event-hover-bg-color: transparent;
+  --fc-today-bg-color: rgba(56, 139, 253, 0.12);
+  --fc-button-bg-color: var(--mantine-color-dark-5);
+  --fc-button-border-color: var(--mantine-color-dark-4);
+  --fc-button-hover-bg-color: var(--mantine-color-dark-4);
+  --fc-button-hover-border-color: var(--mantine-color-dark-3);
+  --fc-button-active-bg-color: var(--mantine-color-blue-8);
+  --fc-button-active-border-color: var(--mantine-color-blue-8);
+  color: var(--mantine-color-text);
+  font-size: 1.05rem;
+}
+.fc .fc-toolbar-title { font-size: 1.15rem; font-weight: 600; }
+.fc .fc-button { font-size: 1rem; padding: 0.6rem 1rem; border-radius: var(--mantine-radius-md); }
+.fc .fc-daygrid-day-frame { min-height: 110px; }
+.fc .fc-daygrid-day-number { font-size: 1rem; padding: 6px 8px; }
+.fc .fc-daygrid-event { font-size: 0.8rem; line-height: 1.25; }
+.fc .fc-daygrid-block-event .fc-event-main-frame { display: block; }
+.fc .fc-daygrid-block-event .fc-event-time { font-weight: 700; }
+.fc .fc-daygrid-block-event .fc-event-title { white-space: normal; }
+.fc .fc-day-today .fc-daygrid-day-number {
+  background: var(--mantine-color-blue-7);
+  color: white;
+  border-radius: 999px;
+  margin: 4px;
+  padding: 2px 9px;
+}
+.fc .fc-list-day-cushion { background-color: var(--mantine-color-dark-6); }
+.fc .fc-list-event td { padding-top: 12px; padding-bottom: 12px; }
+.fc .fc-list-empty { background-color: transparent; color: var(--mantine-color-dimmed); }
+.fc a { color: inherit; text-decoration: none; }
