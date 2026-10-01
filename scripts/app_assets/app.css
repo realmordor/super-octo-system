@@ -34,6 +34,28 @@ html, body {
 .clock-time { font-size: 3rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .clock-date { font-size: 1.2rem; color: var(--mantine-color-dimmed); }
 
+/* Night dimming on/off (app.js) */
+.dim-toggle {
+  margin-left: auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 26px;
+  background: var(--mantine-color-dark-6);
+  color: var(--mantine-color-blue-3);
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.dim-toggle .dim-icon-off { display: none; }
+.dim-toggle.off { color: var(--mantine-color-dimmed); }
+.dim-toggle.off .dim-icon-on { display: none; }
+.dim-toggle.off .dim-icon-off { display: block; }
+
 /* ── Cooking timer ──────────────────────────────────────────────────────────── */
 
 /* The timer sits in the bottom bar beside the tabs, turning orange with the

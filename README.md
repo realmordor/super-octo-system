@@ -68,7 +68,7 @@ What it adds over the original:
 - **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes
 - **Food**: a shared shopping list you add to (type an item, or tap one of this week's ingredients) and tick off, recipe cards with their ingredients, and the recipe finder
 - **Cooking timer** from the Timer button in the bottom bar, which beeps until stopped
-- **Night**: the screen dims from 22:30 to 06:30; a tap wakes it for two minutes
+- **Night**: the screen dims from 22:30 to 06:30 after two minutes untouched, and a tap wakes it; the moon button in the header turns this on or off for that screen (`NIGHT_DIM=off` in `.env` makes off the default)
 
 Cooked ticks are saved in `.cooked.json` and cleared as soon as the weekly menu changes. The shopping list is saved in `.shopping.json` and kept until items are removed.
 

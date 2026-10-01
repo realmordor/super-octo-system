@@ -236,7 +236,10 @@
     });
   }
 
-  new MutationObserver(addDropdownRails).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver(() => {
+    addDropdownRails();
+    if (window.showDimButton) window.showDimButton();  // label the moon button once it's drawn
+  }).observe(document.body, { childList: true, subtree: true });
   setInterval(updateAllRails, 400);  // content and tabs change without scroll events
 
   // ── Cooking timer alarm ─────────────────────────────────────────────────────
@@ -282,8 +285,34 @@
     const minutes = now.getHours() * 60 + now.getMinutes();
     return minutes >= NIGHT_FROM || minutes < NIGHT_TO;
   }
+  // The moon button in the header switches dimming for this screen and remembers it;
+  // until it's used, NIGHT_DIM in .env decides
+  function dimmingOn() {
+    let saved = null;
+    try { saved = localStorage.getItem("night-dim"); } catch (e) {}
+    if (saved) return saved === "on";
+    const app = document.querySelector(".app");
+    return !app || app.dataset.nightDim !== "off";
+  }
+  function showDimButton() {
+    const button = document.getElementById("dim-toggle");
+    if (!button) return;
+    const on = dimmingOn();
+    button.classList.toggle("off", !on);
+    const label = on ? "Night Dim: On" : "Night Dim: Off";
+    const span = button.querySelector(".dim-label");
+    if (span.textContent !== label) span.textContent = label;
+  }
+  window.showDimButton = showDimButton;
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#dim-toggle")) return;
+    try { localStorage.setItem("night-dim", dimmingOn() ? "off" : "on"); } catch (err) {}
+    showDimButton();
+    updateNight();
+  });
   function updateNight() {
-    document.body.classList.toggle("night", isNight() && Date.now() > awakeUntil);
+    document.body.classList.toggle("night", dimmingOn() && isNight() && Date.now() > awakeUntil);
+    showDimButton();
   }
   function wake() {
     awakeUntil = Date.now() + WAKE_MS;

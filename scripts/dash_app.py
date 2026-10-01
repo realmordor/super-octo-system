@@ -38,6 +38,9 @@ dash_callback.GLOBAL_INLINE_SCRIPTS.clear()
 PORT = 8051
 HOME_STATION = "HDW"
 WALK_MINUTES = int(os.getenv("WALK_TO_STATION_MINUTES") or 10)
+# Dim the screen at night (app.js). NIGHT_DIM=off starts with it off; the moon button
+# in the header switches it per screen
+NIGHT_DIM = (os.getenv("NIGHT_DIM") or "on").strip().lower() not in ("off", "false", "no", "0")
 # Darwin only gives station codes; names for where trains through Hadley Wood often end
 # up, beyond the stations dash_dashboard tracks
 DESTINATION_NAMES = {
@@ -676,12 +679,22 @@ def serve_layout():
             html.Div(id="fc-dummy", hidden=True),
             html.Div(
                 className="app",
+                **{"data-night-dim": "on" if NIGHT_DIM else "off"},
                 children=[
                     html.Header(
                         className="app-header",
                         children=[
                             html.Div(id="clock-time", className="clock-time"),
                             html.Div(id="clock-date", className="clock-date"),
+                            html.Button(
+                                [
+                                    DashIconify(icon="tabler:moon", width=26, className="dim-icon-on"),
+                                    DashIconify(icon="tabler:moon-off", width=26, className="dim-icon-off"),
+                                    html.Span("Night Dim", className="dim-label"),
+                                ],
+                                id="dim-toggle",
+                                className="dim-toggle",
+                            ),
                         ],
                     ),
                     html.Div(
