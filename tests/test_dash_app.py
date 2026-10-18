@@ -238,3 +238,44 @@ def test_timeline_fades_finished_events_today_only():
 
 def test_timeline_says_when_nothing_is_planned():
     assert "Nothing planned" in str(a._timeline([], NOW.date(), NOW))
+
+
+@pytest.mark.parametrize(
+    "title, colour",
+    [
+        ("Black bin collection", a.BIN_COLOURS["black"]),
+        ("Brown bin collection", a.BIN_COLOURS["brown"]),
+        ("green bin", a.BIN_COLOURS["green"]),
+        ("Put the BLUE BIN out", a.BIN_COLOURS["blue"]),
+        ("Blue Peter", None),
+        ("Binge watch", None),
+    ],
+)
+def test_bin_colour(title, colour):
+    assert a.bin_colour(title) == colour
+
+
+def test_timeline_colours_bin_collections():
+    events = [
+        {"start": "2026-09-15", "end": "2026-09-16", "summary": "Green bin collection"},
+        {"start": "2026-09-15", "end": "2026-09-16", "summary": "Birthday"},
+    ]
+    bin_chip, other_chip = a._timeline(events, NOW.date(), NOW).children[0].children
+    assert bin_chip.style == {"background": a.BIN_COLOURS["green"]}
+    assert "tl-bin" in bin_chip.className
+    assert "tl-bin" not in other_chip.className
+
+
+def test_calendar_colours_bin_collections(monkeypatch):
+    monkeypatch.setattr(
+        d,
+        "get_upcoming_events",
+        lambda: [
+            {"start": "2026-09-15", "end": "2026-09-16", "summary": "Black bin collection"},
+            {"start": "2026-09-15T08:00:00", "end": "2026-09-15T09:00:00", "summary": "School run"},
+        ],
+    )
+    events, error = a.update_calendar(0)
+    assert error is None
+    assert events[0]["color"] == a.BIN_COLOURS["black"]
+    assert "color" not in events[1]

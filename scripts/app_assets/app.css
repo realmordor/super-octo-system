@@ -100,6 +100,38 @@ html, body {
   to { opacity: 1; transform: none; }
 }
 
+/* Today is a little smaller than the other tabs so it fits on one screen. Mantine
+   text, card padding and gaps follow these variables; the rest is set below. */
+.panel-today {
+  --mantine-font-size-sm: calc(0.8rem * var(--mantine-scale));
+  --mantine-font-size-md: calc(0.92rem * var(--mantine-scale));
+  --mantine-font-size-lg: calc(1.05rem * var(--mantine-scale));
+  --mantine-line-height-sm: 1.35;
+  --mantine-line-height-md: 1.45;
+  --mantine-line-height-lg: 1.5;
+  --mantine-spacing-sm: calc(0.6rem * var(--mantine-scale));
+  --mantine-spacing-md: calc(0.8rem * var(--mantine-scale));
+  --mantine-spacing-lg: calc(1rem * var(--mantine-scale));
+}
+.panel-today .weather-temp { font-size: 2.8rem; }
+.panel-today .weather-now > svg { width: 84px; height: 84px; }
+.panel-today .hour-tile { padding: 6px 0; }
+.panel-today .hour-tile > svg { width: 38px; height: 38px; }
+.panel-today .rail-x { padding-top: 8px; }
+.panel-today .rail-x .rail-btn { height: 48px; }
+.panel-today .leave-by { padding: 8px 14px; }
+.panel-today .leave-by-headline { font-size: 1.3rem; }
+.panel-today .train-row { padding-top: 8px; padding-bottom: 8px; }
+.panel-today .train-time { font-size: 1.65rem; }
+.panel-today .train-arrives { font-size: 1.05rem; }
+.panel-today .tl-alldays { margin-bottom: 10px; }
+.panel-today .tl-allday { padding: 6px 12px; font-size: 0.95rem; }
+.panel-today .tl-row { height: 36px; margin: 4px 0; }
+.panel-today .tl-label { font-size: 0.95rem; }
+.panel-today .menu-row { padding: 7px 0; font-size: 1rem; }
+.panel-today .menu-check .mantine-Checkbox-label { font-size: 1rem; }
+.panel-today .menu-check .mantine-Checkbox-description { font-size: 0.85rem; }
+
 .card-title {
   font-size: 0.875rem;
   font-weight: 600;
@@ -230,6 +262,9 @@ html, body {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+/* Bin collections take the bin's colour (set inline); the outline keeps the black bin
+   visible on the dark card */
+.tl-bin { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35); }
 /* Side margins leave room for the first and last hour labels, centred on their lines */
 .tl-axis { position: relative; height: 24px; margin: 0 26px 4px; }
 .tl-hour {

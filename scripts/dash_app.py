@@ -115,6 +115,11 @@ _day_events_cache: TTLCache = TTLCache(maxsize=4, ttl=300)
 
 TIMELINE_COLOURS = ["#1c7ed6", "#0c8599", "#9c36b5", "#e8590c", "#4263eb", "#c2255c", "#2f9e44"]
 
+# Bin colours for "Black bin collection" etc. events, taken from the photos on Enfield
+# Council's household waste page (brown is the food waste bin)
+BIN_COLOURS = {"black": "#403f3b", "brown": "#786157", "green": "#3d902e", "blue": "#275faf"}
+_BIN_EVENT = re.compile(r"\b(black|brown|green|blue) bin\b", re.IGNORECASE)
+
 FRACTIONS = {0.25: "¼", 0.33: "⅓", 0.5: "½", 0.67: "⅔", 0.75: "¾"}
 
 SHOPPING_FILE = Path(__file__).resolve().parent.parent / ".shopping.json"
@@ -205,6 +210,12 @@ def get_day_events(day: datetime.date) -> list[dict]:
     ]
     _day_events_cache[day] = events
     return events
+
+
+def bin_colour(title: str) -> str | None:
+    """The bin's colour for a bin collection event, or None for any other event."""
+    m = _BIN_EVENT.search(title)
+    return BIN_COLOURS[m[1].lower()] if m else None
 
 
 def _format_amount(amount, unit) -> str:
@@ -651,7 +662,7 @@ def _timer_modals() -> html.Div:
 
 
 def _panel(tab_id: str, *children) -> html.Section:
-    return html.Section(list(children), id={"type": "panel", "id": tab_id}, className="panel")
+    return html.Section(list(children), id={"type": "panel", "id": tab_id}, className=f"panel panel-{tab_id}")
 
 
 def serve_layout():
@@ -869,7 +880,7 @@ clientside_callback(
         if (tab === "calendar" && window._fc) setTimeout(() => window._fc.updateSize(), 0);
         const ctx = dash_clientside.callback_context;
         return [
-            ctx.outputs_list[0].map(o => o.id.id === tab ? "panel active" : "panel"),
+            ctx.outputs_list[0].map(o => `panel panel-${o.id.id}` + (o.id.id === tab ? " active" : "")),
             ctx.outputs_list[1].map(o => o.id.id === tab ? "active" : ""),
         ];
     }""",
@@ -1095,7 +1106,25 @@ def update_calendar(_):
         events = d.get_upcoming_events()
     except Exception as ex:
         return [], _alert(f"Calendar error: {ex}")
-    return [{"title": e["summary"], "start": e["start"], "end": e["end"]} for e in events], None
+    calendar = []
+    for e in events:
+        event = {"title": e["summary"], "start": e["start"], "end": e["end"]}
+        if colour := bin_colour(e["summary"]):
+            event["color"] = colour
+        calendar.append(event)
+    return calendar, None
+
+
+def _allday_chip(title: str) -> html.Span:
+    """An all-day event above the timeline; bin collections take the bin's colour."""
+    colour = bin_colour(title)
+    if not colour:
+        return html.Span([html.B("All day", className="tl-allday-tag"), title], className="tl-allday")
+    return html.Span(
+        [DashIconify(icon="tabler:trash", width=22), html.B("All day", className="tl-allday-tag"), title],
+        className="tl-allday tl-bin",
+        style={"background": colour},
+    )
 
 
 def _timeline(events: list[dict], day: datetime.date, now: datetime.datetime):
@@ -1163,7 +1192,7 @@ def _timeline(events: list[dict], day: datetime.date, now: datetime.datetime):
     return html.Div(
         className="tl",
         children=[
-            html.Div([html.Span([html.B("All day", className="tl-allday-tag"), title], className="tl-allday") for title in all_day], className="tl-alldays") if all_day else None,
+            html.Div([_allday_chip(title) for title in all_day], className="tl-alldays") if all_day else None,
             html.Div(
                 className="tl-axis",
                 children=[html.Span(f"{h:02d}:00", className="tl-hour", style={"left": f"{(h - first) / (last - first) * 100}%"}) for h in hours],

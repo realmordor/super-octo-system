@@ -65,7 +65,8 @@ Its styles and touch handling live in `scripts/app_assets/`. To scale everything
 
 What it adds over the original:
 - **Trains**: any train that stops at the destination (not just ones that end there), with arrival time and journey length; Darwin station messages for the chosen stations; Tube and Elizabeth line status from TfL; on Today, a "leave in N min" countdown for trains from Hadley Wood (set the walk in `WALK_TO_STATION_MINUTES`, default 10)
-- **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes
+- **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes; it's drawn a little smaller than the other tabs so it fits on one screen (the `.panel-today` block in `app.css`)
+- **Bin collections** ("Black bin collection" and so on) show in the bin's colour on Today and in the Calendar tab
 - **Food**: a shared shopping list you add to (type an item, or tap one of this week's ingredients) and tick off, recipe cards with their ingredients, and the recipe finder
 - **Cooking timer** from the Timer button in the bottom bar, which beeps until stopped
 - **Night**: the screen dims from 22:30 to 06:30 after two minutes untouched, and a tap wakes it; the moon button in the header turns this on or off for that screen (`NIGHT_DIM=off` in `.env` makes off the default)
