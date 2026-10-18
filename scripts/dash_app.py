@@ -664,7 +664,8 @@ def serve_layout():
         forceColorScheme="dark",
         theme={"primaryColor": "blue", "defaultRadius": "md"},
         children=[
-            dcc.Interval(id="int-clock", interval=1_000),
+            # Twice a second so the clock's seconds never skip one
+            dcc.Interval(id="int-clock", interval=500),
             dcc.Interval(id="int-trains", interval=5_000),
             dcc.Interval(id="int-weather", interval=1_800_000),
             dcc.Interval(id="int-slow", interval=300_000),
@@ -688,7 +689,7 @@ def serve_layout():
                     html.Header(
                         className="app-header",
                         children=[
-                            html.Div(id="clock-time", className="clock-time"),
+                            html.Div([html.Span(id="clock-time"), html.Span(id="clock-seconds", className="clock-seconds")], className="clock"),
                             html.Div(id="clock-date", className="clock-date"),
                             html.Button(
                                 [
@@ -844,12 +845,15 @@ clientside_callback(
     """function(n) {
         const now = new Date();
         const opts = { timeZone: "Europe/London" };
+        const time = now.toLocaleTimeString("en-GB", { ...opts, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
         return [
-            now.toLocaleTimeString("en-GB", { ...opts, hour: "2-digit", minute: "2-digit", hour12: false }),
+            time.slice(0, 5),
+            time.slice(5),
             now.toLocaleDateString("en-GB", { ...opts, weekday: "long", day: "numeric", month: "long" }),
         ];
     }""",
     Output("clock-time", "children"),
+    Output("clock-seconds", "children"),
     Output("clock-date", "children"),
     Input("int-clock", "n_intervals"),
 )

@@ -31,7 +31,8 @@ html, body {
   gap: 16px;
   padding: calc(env(safe-area-inset-top) + 16px) 20px 8px;
 }
-.clock-time { font-size: 3rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.clock { font-size: 3rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.clock-seconds { font-size: 0.6em; color: var(--mantine-color-dimmed); }
 .clock-date { font-size: 1.2rem; color: var(--mantine-color-dimmed); }
 
 /* Night dimming on/off (app.js) */
@@ -103,34 +104,34 @@ html, body {
 /* Today is a little smaller than the other tabs so it fits on one screen. Mantine
    text, card padding and gaps follow these variables; the rest is set below. */
 .panel-today {
-  --mantine-font-size-sm: calc(0.8rem * var(--mantine-scale));
-  --mantine-font-size-md: calc(0.92rem * var(--mantine-scale));
-  --mantine-font-size-lg: calc(1.05rem * var(--mantine-scale));
-  --mantine-line-height-sm: 1.35;
-  --mantine-line-height-md: 1.45;
-  --mantine-line-height-lg: 1.5;
-  --mantine-spacing-sm: calc(0.6rem * var(--mantine-scale));
-  --mantine-spacing-md: calc(0.8rem * var(--mantine-scale));
-  --mantine-spacing-lg: calc(1rem * var(--mantine-scale));
+  --mantine-font-size-sm: calc(0.84rem * var(--mantine-scale));
+  --mantine-font-size-md: calc(0.96rem * var(--mantine-scale));
+  --mantine-font-size-lg: calc(1.09rem * var(--mantine-scale));
+  --mantine-line-height-sm: 1.4;
+  --mantine-line-height-md: 1.5;
+  --mantine-line-height-lg: 1.55;
+  --mantine-spacing-sm: calc(0.68rem * var(--mantine-scale));
+  --mantine-spacing-md: calc(0.9rem * var(--mantine-scale));
+  --mantine-spacing-lg: calc(1.13rem * var(--mantine-scale));
 }
-.panel-today .weather-temp { font-size: 2.8rem; }
-.panel-today .weather-now > svg { width: 84px; height: 84px; }
-.panel-today .hour-tile { padding: 6px 0; }
-.panel-today .hour-tile > svg { width: 38px; height: 38px; }
-.panel-today .rail-x { padding-top: 8px; }
-.panel-today .rail-x .rail-btn { height: 48px; }
-.panel-today .leave-by { padding: 8px 14px; }
-.panel-today .leave-by-headline { font-size: 1.3rem; }
-.panel-today .train-row { padding-top: 8px; padding-bottom: 8px; }
-.panel-today .train-time { font-size: 1.65rem; }
-.panel-today .train-arrives { font-size: 1.05rem; }
-.panel-today .tl-alldays { margin-bottom: 10px; }
-.panel-today .tl-allday { padding: 6px 12px; font-size: 0.95rem; }
-.panel-today .tl-row { height: 36px; margin: 4px 0; }
-.panel-today .tl-label { font-size: 0.95rem; }
-.panel-today .menu-row { padding: 7px 0; font-size: 1rem; }
-.panel-today .menu-check .mantine-Checkbox-label { font-size: 1rem; }
-.panel-today .menu-check .mantine-Checkbox-description { font-size: 0.85rem; }
+.panel-today .weather-temp { font-size: 3rem; }
+.panel-today .weather-now > svg { width: 90px; height: 90px; }
+.panel-today .hour-tile { padding: 8px 0; }
+.panel-today .hour-tile > svg { width: 41px; height: 41px; }
+.panel-today .rail-x { padding-top: 10px; }
+.panel-today .rail-x .rail-btn { height: 52px; }
+.panel-today .leave-by { padding: 10px 15px; }
+.panel-today .leave-by-headline { font-size: 1.4rem; }
+.panel-today .train-row { padding-top: 10px; padding-bottom: 10px; }
+.panel-today .train-time { font-size: 1.78rem; }
+.panel-today .train-arrives { font-size: 1.13rem; }
+.panel-today .tl-alldays { margin-bottom: 12px; }
+.panel-today .tl-allday { padding: 7px 13px; font-size: 1rem; }
+.panel-today .tl-row { height: 40px; margin: 5px 0; }
+.panel-today .tl-label { font-size: 1rem; }
+.panel-today .menu-row { padding: 8.5px 0; font-size: 1.05rem; }
+.panel-today .menu-check .mantine-Checkbox-label { font-size: 1.05rem; }
+.panel-today .menu-check .mantine-Checkbox-description { font-size: 0.9rem; }
 
 .card-title {
   font-size: 0.875rem;
