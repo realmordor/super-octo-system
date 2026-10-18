@@ -1,6 +1,6 @@
 # super-octo-system
 
-A personal home dashboard built with Dash. Displays Google Calendar events, Met Office weather, live National Rail departures, a weekly menu, household schedule, and a recipe finder — all in one page, refreshing automatically.
+A personal home dashboard for a portrait touch screen, built with Dash and [Dash Mantine Components](https://www.dash-mantine-components.com/). Shows Google Calendar events, Met Office weather, live National Rail departures, Tube status, a weekly menu, a shopping list, the household schedule and a recipe finder, refreshing automatically.
 
 ## Requirements
 
@@ -45,27 +45,20 @@ The train board uses the real-time Push Port stream (STOMP topic `darwin.pushpor
 ## Running the dashboard
 
 ```bash
-uv run python scripts/dash_dashboard.py
+uv run python scripts/dash_app.py
 ```
 
-Or start it in the background (logs go to `nohup_dash.out`):
+Or start it in the background (logs go to `nohup_app.out`):
 ```bash
-./scripts/start_dash_dashboard.sh
+./scripts/start_dash_app.sh
 ```
 
-The dashboard listens on all interfaces, so open `http://<your-server-ip>:8050` in any browser on the network (e.g. for a wall-mounted display).
+The dashboard listens on all interfaces, so open `http://<your-server-ip>:8051` in any browser on the network. Open pages reload themselves when it restarts.
 
-### Phone-style version (portrait touch screens)
+Each section is a full-screen tab (Today, Trains, Calendar, Food, Schedule) picked from the bottom bar; swipe left or right to change tab, and after 3 minutes without a touch it goes back to Today. Styles and touch handling live in `scripts/app_assets/`. To scale everything up or down for a different screen, change the `font-size` at the top of `app.css`. The data fetching (calendar, weather, trains, menu sheets) is in `scripts/dashboard_data.py`.
 
-`scripts/dash_app.py` shows the same data as full-screen tabs (Today, Trains, Calendar, Food, Schedule) with a bottom navigation bar, built with [Dash Mantine Components](https://www.dash-mantine-components.com/). Swipe left or right to change tab; after 3 minutes without a touch it goes back to Today. It runs alongside the original on port 8051:
-```bash
-./scripts/start_dash_app.sh    # logs go to nohup_app.out
-```
-Its styles and touch handling live in `scripts/app_assets/`. To scale everything up or down for a different screen, change the `font-size` at the top of `app.css`.
-
-What it adds over the original:
-- **Trains**: any train that stops at the destination (not just ones that end there), with arrival time and journey length; Darwin station messages for the chosen stations; Tube and Elizabeth line status from TfL; on Today, a "leave in N min" countdown for trains from Hadley Wood (set the walk in `WALK_TO_STATION_MINUTES`, default 10)
 - **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes; it's drawn a little smaller than the other tabs so it fits on one screen (the `.panel-today` block in `app.css`)
+- **Trains**: any train that stops at the destination, with arrival time and journey length; Darwin station messages for the chosen stations; Tube and Elizabeth line status from TfL; on Today, a "leave in N min" countdown for trains from Hadley Wood (set the walk in `WALK_TO_STATION_MINUTES`, default 10)
 - **Bin collections** ("Black bin collection" and so on) show in the bin's colour on Today and in the Calendar tab
 - **Food**: a shared shopping list you add to (type an item, or tap one of this week's ingredients) and tick off, recipe cards with their ingredients, and the recipe finder
 - **Cooking timer** from the Timer button in the bottom bar, which beeps until stopped
@@ -84,7 +77,7 @@ After=network.target
 [Service]
 User=squid
 WorkingDirectory=/home/squid/code/super-octo-system
-ExecStart=/home/squid/.local/bin/uv run python scripts/dash_dashboard.py
+ExecStart=/home/squid/.local/bin/uv run python scripts/dash_app.py
 Restart=always
 
 [Install]
@@ -101,12 +94,12 @@ sudo systemctl start dashboard
 
 **Unit tests** (no network required):
 ```bash
-uv run pytest tests/test_dash_dashboard.py -v
+uv run pytest tests/test_dash_app.py tests/test_dashboard_data.py -v
 ```
 
 **Integration tests** (hit real APIs — requires `.env` to be configured):
 ```bash
-uv run pytest tests/test_integration_dash.py -v
+uv run pytest tests/test_integration_data.py -v
 ```
 
 **All tests:**

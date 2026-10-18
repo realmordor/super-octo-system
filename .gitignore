@@ -2,9 +2,6 @@
 credentials.json
 token.json
 nohup.out
-nohup_dash.out
-.dashboard.pid
-.dash_dashboard.pid
 nohup_app.out
 .dash_app.pid
 .cooked.json

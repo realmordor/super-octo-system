@@ -1,8 +1,8 @@
-"""Phone-style version of the dashboard for a portrait touch screen.
+"""Phone-style home dashboard for a portrait touch screen, on port 8051.
 
-Runs alongside scripts/dash_dashboard.py (port 8051 instead of 8050) and reuses its
-data fetching. Each section is a full-screen tab picked from a bottom bar, or by
-swiping left and right; the app returns to the Today tab after a few idle minutes.
+Each section is a full-screen tab picked from a bottom bar, or by swiping left and
+right; the app returns to the Today tab after a few idle minutes. The data comes from
+scripts/dashboard_data.py.
 """
 
 import datetime
@@ -22,18 +22,11 @@ import pandas as pd
 import requests
 from cachetools import TTLCache
 from dash import ALL, Input, Output, State, clientside_callback, dcc, html
-from dash import _callback as dash_callback
 from dash_iconify import DashIconify
 from dateutil import parser as dt_parser
 from googleapiclient.discovery import build
 
-import dash_dashboard as d
-
-# dash_dashboard registers its clientside callbacks globally, so drop them before
-# they get attached to this app (they target components that don't exist here).
-dash_callback.GLOBAL_CALLBACK_LIST.clear()
-dash_callback.GLOBAL_CALLBACK_MAP.clear()
-dash_callback.GLOBAL_INLINE_SCRIPTS.clear()
+import dashboard_data as d
 
 PORT = 8051
 HOME_STATION = "HDW"
@@ -42,7 +35,7 @@ WALK_MINUTES = int(os.getenv("WALK_TO_STATION_MINUTES") or 10)
 # in the header switches it per screen
 NIGHT_DIM = (os.getenv("NIGHT_DIM") or "on").strip().lower() not in ("off", "false", "no", "0")
 # Darwin only gives station codes; names for where trains through Hadley Wood often end
-# up, beyond the stations dash_dashboard tracks
+# up, beyond the stations dashboard_data tracks
 DESTINATION_NAMES = {
     **d.TIPLOC_TO_NAME,
     "KNGX": "King's Cross",
@@ -454,8 +447,8 @@ def get_station_messages(*crs: str) -> list[dict]:
 
 
 def _train_row(train: dict, now: datetime.datetime) -> html.Div:
-    """Same colours as the main dashboard: red when cancelled or leaving within 10
-    minutes, green from 10 to 20 minutes away."""
+    """Red when cancelled or leaving within 10 minutes, green from 10 to 20 minutes
+    away."""
     status = train["status"]
     minutes = round((train["departs"] - now).total_seconds() / 60)
     if status == "Cancelled" or minutes <= 10:

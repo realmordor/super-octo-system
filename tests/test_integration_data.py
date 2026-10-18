@@ -1,5 +1,5 @@
 """
-Integration tests for scripts/dash_dashboard.py — hit real external APIs.
+Integration tests for scripts/dashboard_data.py — hit real external APIs.
 
 Run with:  uv run pytest -m integration
 Skip with: uv run pytest -m "not integration"  (default test run)
@@ -11,7 +11,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
-import scripts.dash_dashboard as d  # noqa: E402
+import scripts.dashboard_data as d  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -37,36 +37,6 @@ def test_integration_menu_recipe_names_returns_strings():
     names = d.get_menu_recipe_names()
     assert isinstance(names, set)
     assert all(isinstance(n, str) and n for n in names)
-
-
-def test_integration_ingredients_are_sorted_strings():
-    ingredients = d.get_ingredients()
-    assert isinstance(ingredients, list)
-    assert all(isinstance(i, str) and i for i in ingredients)
-    assert ingredients == sorted(ingredients)
-
-
-def test_integration_ingredients_match_menu_recipes():
-    menu_recipes = d.get_menu_recipe_names()
-    ingredients = d.get_ingredients()
-    if menu_recipes:
-        assert len(ingredients) > 0, "Expected ingredients when menu recipes exist"
-
-
-def test_integration_schedule_summary_has_day_columns():
-    result = d.get_schedule_summary()
-    assert not result.empty
-    day_cols = [c for c in result.columns if c in d.DAYS]
-    assert len(day_cols) > 0
-
-
-def test_integration_recipes_for_ingredient_returns_dict():
-    ingredients = d.get_ingredients()
-    if not ingredients:
-        pytest.skip("No ingredients available this week")
-    result = d.get_recipes_for_ingredient(ingredients[0])
-    assert isinstance(result, dict)
-    assert all(isinstance(k, str) and isinstance(v, str) for k, v in result.items())
 
 
 # ── Met Office API (requires MET_OFFICE_API_KEY) ──────────────────────────────
