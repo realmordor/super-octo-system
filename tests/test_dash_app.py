@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
@@ -214,6 +215,15 @@ def test_a_new_menu_deletes_all_ticks_even_if_old_recipes_return():
 def test_ticks_file_keeps_the_existing_format():
     a.set_tick(["Quiche"], "cooked", "Quiche", True)
     assert json.loads(a.COOKED_FILE.read_text()) == {"menu": ["Quiche"], "cooked": ["Quiche"]}
+
+
+def test_cooked_recipes_go_to_the_bottom_of_todays_menu(monkeypatch):
+    menu = pd.DataFrame({"label": ["final"], "Quiche": ["Quiche"], "Gratin": ["Gratin"], "Curry": ["Curry"]})
+    monkeypatch.setattr(d, "get_weekly_menu", lambda: menu)
+    monkeypatch.setattr(a, "get_recipe_ingredients", lambda: {})
+    a.set_tick(["Quiche", "Gratin", "Curry"], "cooked", "Quiche", True)
+    _, summary, _ = a.update_menu(0, None, None)
+    assert [row.children[0].id["id"] for row in summary] == ["Gratin", "Curry", "Quiche"]
 
 
 # ── Timeline ──────────────────────────────────────────────────────────────────

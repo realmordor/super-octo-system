@@ -1277,9 +1277,10 @@ def _signature(*data) -> str:
     Output("today-menu", "children"),
     Output("food-sig", "data"),
     Input("int-slow", "n_intervals"),
+    Input("cooked-saved", "data"),
     State("food-sig", "data"),
 )
-def update_menu(_, previous):
+def update_menu(_, __, previous):
     try:
         menu = d.get_weekly_menu()
     except Exception as ex:
@@ -1302,30 +1303,29 @@ def update_menu(_, previous):
         book, page = info.get("recipeBook", ""), str(info.get("pageNumber", "")).strip()
         url = page if re.fullmatch(r"https?://\S+", page) else None
         where = book if url else f"{book}, p. {page}" if book and page else book or (f"p. {page}" if page else "")
-        summary.append(
-            html.Div(
-                className="menu-row",
-                children=[
-                    dmc.Checkbox(
-                        id={"type": "cooked", "id": recipe},
-                        checked=recipe in cooked,
-                        label=recipe,
-                        description=None if url else where or None,
-                        size="xl",
-                        radius="md",
-                        color="green",
-                        className="menu-check",
-                    ),
-                    html.Span(
-                        [
-                            dmc.Anchor([where or "Recipe", " ", DashIconify(icon="tabler:external-link", width=16)], href=url, target="_blank") if url else None,
-                            DashIconify(icon="tabler:salad", width=22) if side_salad else None,
-                        ],
-                        className="menu-row-meta",
-                    ),
-                ],
-            )
+        row = html.Div(
+            className="menu-row",
+            children=[
+                dmc.Checkbox(
+                    id={"type": "cooked", "id": recipe},
+                    checked=recipe in cooked,
+                    label=recipe,
+                    description=None if url else where or None,
+                    size="xl",
+                    radius="md",
+                    color="green",
+                    className="menu-check",
+                ),
+                html.Span(
+                    [
+                        dmc.Anchor([where or "Recipe", " ", DashIconify(icon="tabler:external-link", width=16)], href=url, target="_blank") if url else None,
+                        DashIconify(icon="tabler:salad", width=22) if side_salad else None,
+                    ],
+                    className="menu-row-meta",
+                ),
+            ],
         )
+        summary.append((recipe in cooked, row))
         source = []
         if url:
             source.append(dmc.Anchor([book or "Open recipe", " ", DashIconify(icon="tabler:external-link", width=16)], href=url, target="_blank"))
@@ -1352,6 +1352,8 @@ def update_menu(_, previous):
                 mb="sm",
             )
         )
+    # Cooked recipes drop to the bottom of the list on Today
+    summary = [row for _, row in sorted(summary, key=lambda r: r[0])]
     return [dmc.Text("This week's menu", fw=600, c="dimmed", size="sm", tt="uppercase", mb="sm"), *cards], summary, signature
 
 
