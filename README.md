@@ -57,7 +57,7 @@ The dashboard listens on all interfaces, so open `http://<your-server-ip>:8051` 
 
 Each section is a full-screen tab (Today, Trains, Calendar, Food, Schedule) picked from the bottom bar; swipe left or right to change tab, and after 3 minutes without a touch it goes back to Today. Styles and touch handling live in `scripts/app_assets/`. To scale everything up or down for a different screen, change the `font-size` at the top of `app.css`. The data fetching (calendar, weather, trains, menu sheets) is in `scripts/dashboard_data.py`.
 
-- **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes; it's drawn a little smaller than the other tabs so it fits on one screen (the `.panel-today` block in `app.css`)
+- **Today**: weather, horizontal timelines for today and tomorrow, and this week's menu with tick boxes for cooked recipes
 - **Trains**: any train that stops at the destination, with arrival time and journey length; Darwin station messages for the chosen stations; Tube and Elizabeth line status from TfL; on Today, a "leave in N min" countdown for trains from Hadley Wood (set the walk in `WALK_TO_STATION_MINUTES`, default 10)
 - **Bin collections** ("Black bin collection" and so on) show in the bin's colour on Today and in the Calendar tab
 - **Food**: a shared shopping list you add to (type an item, or tap one of this week's ingredients) and tick off, recipe cards with their ingredients, and the recipe finder
